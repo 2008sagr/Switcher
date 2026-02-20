@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>com.switcher.app</string>
+    <key>CFBundleIconFile</key>
+    <string>AppIcon</string>
+    <key>CFBundleName</key>
+    <string>Switcher</string>
+    <key>CFBundleDisplayName</key>
+    <string>Switcher</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleExecutable</key>
+    <string>Switcher</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleSignature</key>
+    <string>????</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+
+    <!-- Hide from Dock — this is a menu bar only app -->
+    <key>LSUIElement</key>
+    <true/>
+
+    <!-- Privacy usage descriptions (required for notarization) -->
+    <key>NSAccessibilityUsageDescription</key>
+    <string>Switcher требует доступ к специальным возможностям для мониторинга ввода с клавиатуры и замены неверно набранного текста.</string>
+
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Switcher отправляет события клавиатуры для замены текста в активном приложении.</string>
+
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2025. All rights reserved.</string>
+</dict>
+</plist>
