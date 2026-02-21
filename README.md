@@ -184,7 +184,7 @@ E              e / E    у / У
 
 ### Словарь и обучение
 
-`SwitchDictionary` хранится в `~/Library/Application Support/Switcher/dictionary.json` (pretty-printed JSON, стабильный diff).
+`SwitchDictionary` хранится в `~/.switcher/dictionary.json` (pretty-printed JSON, стабильный diff, удобно для резервного копирования).
 
 Содержимое:
 - `exceptions` — слова, которые никогда не переключаются (массив, отсортированный для стабильного diff)

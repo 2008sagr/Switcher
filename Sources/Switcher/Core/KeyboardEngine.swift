@@ -31,6 +31,8 @@ final class KeyboardEngine {
     var excludedApps:       Set<String>       = []
     var corrections:        [String: String]  = [:]  // lowercased "from" → "to"
 
+    private let maxWordBufferLength: Int = 50  // Prevent memory issues with very long input
+
     // MARK: - Callbacks
 
     var onSwitched: ((LastSwitchInfo) -> Void)?
@@ -184,17 +186,16 @@ final class KeyboardEngine {
 
         default:
             guard let char = unicodeChar(from: event) else { return true }
+            // No punctuation triggers — only space and Enter are reliable word boundaries
+            if lastSwitch != nil { lastSwitch = nil }
 
-            if isPunctuation(char) {
-                if applyCorrection(appendingChar: char) { wordBuffer = ""; return false }
-                let switched = triggerCheck(appendingChar: char)
-                wordBuffer = ""
-                return !switched
+            // Prevent buffer overflow: reset if too long (likely code/JSON/etc)
+            if wordBuffer.count >= maxWordBufferLength {
+                wordBuffer = String(char)
             } else {
-                if lastSwitch != nil { lastSwitch = nil }
                 wordBuffer.append(char)
-                return true
             }
+            return true
         }
     }
 
@@ -416,8 +417,6 @@ final class KeyboardEngine {
         guard length > 0, let scalar = Unicode.Scalar(chars[0]) else { return nil }
         return Character(scalar)
     }
-
-    private func isPunctuation(_ char: Character) -> Bool { ".,!?;:".contains(char) }
 
     private func oppositeLanguage(_ lang: String) -> String { lang.hasPrefix("ru") ? "en" : "ru" }
 

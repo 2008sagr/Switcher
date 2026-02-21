@@ -28,7 +28,7 @@ struct CorrectionRule: Codable {
 
 /// Persistent user dictionary for Switcher.
 /// Stores exceptions (words that must never be auto-switched) and correction rules.
-/// Saved as JSON to Application Support/Switcher/dictionary.json.
+/// Saved as JSON to ~/.switcher/dictionary.json (user home directory, survives app updates).
 struct SwitchDictionary: Codable {
 
     var schemaVersion: Int            = 1
@@ -51,20 +51,39 @@ struct SwitchDictionary: Codable {
     // MARK: - Persistence
 
     static var fileURL: URL = {
-        let support = FileManager.default.urls(
-            for: .applicationSupportDirectory, in: .userDomainMask)[0]
-        let dir = support.appendingPathComponent("Switcher", isDirectory: true)
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let dir = home.appendingPathComponent(".switcher", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir,
             withIntermediateDirectories: true, attributes: nil)
         return dir.appendingPathComponent("dictionary.json")
     }()
 
+    /// Legacy location (for migration)
+    private static var legacyFileURL: URL? = {
+        let support = FileManager.default.urls(
+            for: .applicationSupportDirectory, in: .userDomainMask)[0]
+        let dir = support.appendingPathComponent("Switcher", isDirectory: true)
+        return dir.appendingPathComponent("dictionary.json")
+    }()
+
     static func load() -> SwitchDictionary {
+        // Try new location first
         if let data = try? Data(contentsOf: fileURL),
            let dict = try? decoder.decode(SwitchDictionary.self, from: data) {
             return dict
         }
-        // Migrate from UserDefaults (legacy storage)
+
+        // Try legacy location (~/Library/Application Support/Switcher/)
+        if let legacyURL = legacyFileURL,
+           let data = try? Data(contentsOf: legacyURL),
+           let dict = try? decoder.decode(SwitchDictionary.self, from: data) {
+            print("[Switcher] Migrating dictionary from legacy location to ~/.switcher/")
+            dict.save()  // Save to new location
+            try? FileManager.default.removeItem(at: legacyURL)  // Clean up old file
+            return dict
+        }
+
+        // Migrate from UserDefaults (oldest legacy storage)
         let legacy = UserDefaults.standard.stringArray(forKey: "exclusions") ?? []
         var dict = SwitchDictionary()
         dict.exceptions = legacy.map { $0.lowercased() }.sorted()

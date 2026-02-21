@@ -6,11 +6,30 @@ final class SpellCheckService {
 
     private let checker = NSSpellChecker.shared
 
+    // MARK: - Cache for spell checking results (LRU)
+    private struct CacheEntry {
+        let isValid: Bool
+        var lastAccess: Date
+    }
+    private var spellCheckCache: [String: CacheEntry] = [:]
+    private let maxCacheSize = 200  // Limit cache to prevent memory bloat
+
     // MARK: - Spell checking
 
     /// Returns true if `word` appears to be a valid word in `language` (e.g. "en", "ru").
     func isValidWord(_ word: String, language: String) -> Bool {
         guard word.count >= 2 else { return true }
+
+        // Check cache first
+        let cacheKey = "\(word)|\(language)"
+        if var cached = spellCheckCache[cacheKey] {
+            // Cache hit — update access time and return
+            cached.lastAccess = Date()
+            spellCheckCache[cacheKey] = cached
+            return cached.isValid
+        }
+
+        // Cache miss — perform actual spell check
         let range = checker.checkSpelling(
             of: word,
             startingAt: 0,
@@ -19,7 +38,23 @@ final class SpellCheckService {
             inSpellDocumentWithTag: 0,
             wordCount: nil
         )
-        return range.location == NSNotFound
+        let isValid = range.location == NSNotFound
+
+        // Store in cache (evict LRU entry if full)
+        if spellCheckCache.count >= maxCacheSize {
+            evictLeastRecentlyUsed()
+        }
+        spellCheckCache[cacheKey] = CacheEntry(isValid: isValid, lastAccess: Date())
+
+        return isValid
+    }
+
+    /// Evicts the least recently used entry from the cache.
+    private func evictLeastRecentlyUsed() {
+        guard let oldestKey = spellCheckCache.min(by: { $0.value.lastAccess < $1.value.lastAccess })?.key else {
+            return
+        }
+        spellCheckCache.removeValue(forKey: oldestKey)
     }
 
     // MARK: - Wrong layout detection
