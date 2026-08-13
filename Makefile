@@ -22,7 +22,7 @@ bundle: build
 	@rm -rf $(APP_DIR)
 	@mkdir -p $(CONTENTS)/MacOS
 	@mkdir -p $(CONTENTS)/Resources
-	@cp $(BUILD_DIR)/$(APP_NAME) $(CONTENTS)/MacOS/
+	@cp $(BUILD_DIR)/SwitcherApp $(CONTENTS)/MacOS/$(APP_NAME)
 	@cp Resources/Info.plist        $(CONTENTS)/
 	@cp Resources/AppIcon.icns      $(CONTENTS)/Resources/
 	@echo "✅ Bundle created: $(APP_DIR)"

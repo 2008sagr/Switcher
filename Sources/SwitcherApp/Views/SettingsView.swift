@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import SwitcherCore
 
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState

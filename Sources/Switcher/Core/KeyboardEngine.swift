@@ -18,7 +18,7 @@ private func eventTapCallback(
 
 // MARK: - KeyboardEngine
 
-final class KeyboardEngine {
+public final class KeyboardEngine {
 
     // MARK: - Configuration
 
@@ -57,7 +57,7 @@ final class KeyboardEngine {
 
     // MARK: - Lifecycle
 
-    func start() {
+    public func start() {
         guard !isRunning else { return }
         guard AXIsProcessTrusted() else {
             print("[Switcher] Not trusted — waiting for Accessibility permission")
@@ -304,7 +304,7 @@ final class KeyboardEngine {
 
     // MARK: - Undo
 
-    func performUndoFromUI() {
+    public func performUndoFromUI() {
         guard let info = lastSwitch, info.isUndoable else { return }
         performUndo(info)
     }

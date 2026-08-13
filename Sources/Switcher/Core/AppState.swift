@@ -3,46 +3,46 @@ import Combine
 import ApplicationServices
 import ServiceManagement
 
-class AppState: ObservableObject {
+public class AppState: ObservableObject {
 
     // MARK: - Persisted settings
 
-    @Published var isEnabled: Bool {
+    @Published public var isEnabled: Bool {
         didSet {
             UserDefaults.standard.set(isEnabled, forKey: "isEnabled")
             isEnabled ? engine.start() : engine.stop()
         }
     }
 
-    @Published var autoSwitchEnabled: Bool {
+    @Published public var autoSwitchEnabled: Bool {
         didSet {
             UserDefaults.standard.set(autoSwitchEnabled, forKey: "autoSwitchEnabled")
             engine.autoSwitchEnabled = autoSwitchEnabled
         }
     }
 
-    @Published var doubleShiftEnabled: Bool {
+    @Published public var doubleShiftEnabled: Bool {
         didSet {
             UserDefaults.standard.set(doubleShiftEnabled, forKey: "doubleShiftEnabled")
             engine.doubleShiftEnabled = doubleShiftEnabled
         }
     }
 
-    @Published var spellCheckEnabled: Bool {
+    @Published public var spellCheckEnabled: Bool {
         didSet {
             UserDefaults.standard.set(spellCheckEnabled, forKey: "spellCheckEnabled")
             engine.spellCheckEnabled = spellCheckEnabled
         }
     }
 
-    @Published var minWordLength: Int {
+    @Published public var minWordLength: Int {
         didSet {
             UserDefaults.standard.set(minWordLength, forKey: "minWordLength")
             engine.minWordLength = minWordLength
         }
     }
 
-    @Published var learningEnabled: Bool {
+    @Published public var learningEnabled: Bool {
         didSet {
             UserDefaults.standard.set(learningEnabled, forKey: "learningEnabled")
             engine.learningEnabled = learningEnabled
@@ -51,7 +51,7 @@ class AppState: ObservableObject {
 
     private var applyingLaunchAtLogin = false
 
-    @Published var launchAtLoginEnabled: Bool {
+    @Published public var launchAtLoginEnabled: Bool {
         didSet {
             guard !applyingLaunchAtLogin else { return }
             do {
@@ -71,7 +71,7 @@ class AppState: ObservableObject {
 
     // MARK: - Dictionary
 
-    @Published var dictionary: SwitchDictionary {
+    @Published public var dictionary: SwitchDictionary {
         didSet {
             dictionary.save()
             engine.exclusions   = dictionary.exceptionsSet
@@ -80,15 +80,15 @@ class AppState: ObservableObject {
         }
     }
 
-    func addException(_ word: String) {
+    public func addException(_ word: String) {
         dictionary.addException(word)
     }
 
-    func removeException(_ word: String) {
+    public func removeException(_ word: String) {
         dictionary.removeException(word)
     }
 
-    func importDictionary(_ imported: SwitchDictionary, merging: Bool) {
+    public func importDictionary(_ imported: SwitchDictionary, merging: Bool) {
         if merging {
             dictionary.merge(with: imported)
         } else {
@@ -96,49 +96,49 @@ class AppState: ObservableObject {
         }
     }
 
-    var exclusions: Set<String> { dictionary.exceptionsSet }
+    public var exclusions: Set<String> { dictionary.exceptionsSet }
 
     // MARK: - Per-app exclusions
 
-    var excludedApps: [String] { dictionary.excludedApps }
+    public var excludedApps: [String] { dictionary.excludedApps }
 
-    func addExcludedApp(_ bundleID: String) {
+    public func addExcludedApp(_ bundleID: String) {
         dictionary.addExcludedApp(bundleID)
     }
 
-    func removeExcludedApp(_ bundleID: String) {
+    public func removeExcludedApp(_ bundleID: String) {
         dictionary.removeExcludedApp(bundleID)
     }
 
     // MARK: - Corrections
 
-    var correctionRules: [CorrectionRule] { dictionary.corrections }
+    public var correctionRules: [CorrectionRule] { dictionary.corrections }
 
-    func addCorrection(from: String, to: String) {
+    public func addCorrection(from: String, to: String) {
         dictionary.addCorrection(from: from, to: to)
     }
 
-    func removeCorrection(from: String) {
+    public func removeCorrection(from: String) {
         dictionary.removeCorrection(from: from)
     }
 
     // MARK: - Runtime state
 
-    @Published var switchCount:      Int    = 0
-    @Published var lastSwitchedWord: String = ""
-    @Published var hasAccessibility: Bool   = false
-    @Published var engineRunning:    Bool   = false
-    @Published var lastSwitch:       LastSwitchInfo?
-    @Published var currentLayout:    String = "EN"
+    @Published public var switchCount:      Int    = 0
+    @Published public var lastSwitchedWord: String = ""
+    @Published public var hasAccessibility: Bool   = false
+    @Published public var engineRunning:    Bool   = false
+    @Published public var lastSwitch:       LastSwitchInfo?
+    @Published public var currentLayout:    String = "EN"
 
-    var canUndo: Bool { lastSwitch?.isUndoable == true }
+    public var canUndo: Bool { lastSwitch?.isUndoable == true }
 
     // MARK: - Engine
 
-    let engine: KeyboardEngine
+    public let engine: KeyboardEngine
     private var layoutObserver: NSObjectProtocol?
 
-    init() {
+    public init() {
         let savedDict        = SwitchDictionary.load()
         isEnabled            = UserDefaults.standard.object(forKey: "isEnabled")           as? Bool ?? true
         autoSwitchEnabled    = UserDefaults.standard.object(forKey: "autoSwitchEnabled")   as? Bool ?? true

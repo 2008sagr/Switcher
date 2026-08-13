@@ -1,4 +1,5 @@
 import SwiftUI
+import SwitcherCore
 
 struct MenuBarContentView: View {
     @EnvironmentObject var appState: AppState
