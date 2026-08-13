@@ -36,6 +36,7 @@
 | `Sources/Switcher/Core/Detection/TrigramModel.swift` | загрузка бинарного ресурса, `meanLogProb` |
 | `Sources/Switcher/Core/Detection/GuardRules.swift` | URL/email/пути, пароли, исключения слов и приложений |
 | `Sources/Switcher/Core/Detection/LayoutDetector.swift` | вердикт: чистая функция |
+| `Sources/Switcher/Core/Detection/LanguagePrior.swift` | язык последних слов, сдвиг порога |
 | `Sources/Switcher/Core/Input/KeystrokeBuffer.swift` | буфер нажатий, границы слов |
 | `Sources/Switcher/Core/Input/EventTapController.swift` | тап на выделенном потоке, метка synthetic |
 | `Sources/Switcher/Core/Replacement/AXTextClient.swift` | обёртка над AX с таймаутом |
@@ -1409,6 +1410,238 @@ git commit -m "feat: LayoutDetector с калиброванными порога
 между текущей и противоположной раскладкой. Пороги получены прогоном
 по корпусу, а не назначены. Словарь текущего языка имеет приоритет
 над статистикой."
+```
+
+---
+
+## Task 6b: LanguagePrior — контекст последних слов
+
+Единственный резерв точности, недостижимый для модели одного слова.
+
+Замеры: 0.68% словаря принципиально неоднозначны — транспонированная форма
+слова является настоящим словом другого языка («руку» ←→ «here», «еще» ←→ «tot»,
+«душа» ←→ «leif»). Модель, смотрящая на одно слово, такие случаи не решает
+никогда: это одни и те же нажатия клавиш. Их `delta` кучкуется вокруг нуля
+(медиана −0.04, 79% в полосе от −0.5 до +1.0), то есть решение принимается
+на грани. Язык соседних слов — единственный доступный дополнительный сигнал.
+
+**Files:**
+- Create: `Sources/Switcher/Core/Detection/LanguagePrior.swift`
+- Modify: `Sources/Switcher/Core/Detection/LayoutDetector.swift`
+- Test: `Tests/SwitcherTests/LanguagePriorTests.swift`
+
+**Interfaces:**
+- Consumes: `Layout` (Task 2), `LayoutDetector`, `DetectorThresholds` (Task 6)
+- Produces:
+  - `public final class LanguagePrior { public init(capacity: Int, weight: Double); public func record(_ layout: Layout); public func reset(); public func bonus(forConverting to: Layout) -> Double }`
+  - `LayoutDetector.init` получает дополнительный параметр `prior: LanguagePrior?` (по умолчанию `nil`)
+  - `bonus` лежит в диапазоне `[-weight, +weight]`; эффективный порог = `threshold - bonus`
+
+- [ ] **Step 1: Написать падающий тест**
+
+`Tests/SwitcherTests/LanguagePriorTests.swift`:
+
+```swift
+import XCTest
+@testable import SwitcherCore
+
+final class LanguagePriorTests: XCTestCase {
+
+    func testEmptyHistoryGivesNoBonus() {
+        let prior = LanguagePrior(capacity: 3, weight: 0.5)
+        XCTAssertEqual(prior.bonus(forConverting: .ru), 0.0, accuracy: 0.001)
+    }
+
+    func testUniformHistoryGivesFullBonusTowardsIt() {
+        let prior = LanguagePrior(capacity: 3, weight: 0.5)
+        for _ in 0..<3 { prior.record(.ru) }
+        XCTAssertEqual(prior.bonus(forConverting: .ru), 0.5, accuracy: 0.001)
+        XCTAssertEqual(prior.bonus(forConverting: .en), -0.5, accuracy: 0.001,
+                       "Против контекста порог должен ужесточаться симметрично")
+    }
+
+    func testMixedHistoryGivesPartialBonus() {
+        let prior = LanguagePrior(capacity: 4, weight: 0.5)
+        prior.record(.ru); prior.record(.ru); prior.record(.ru); prior.record(.en)
+        // доли 0.75 / 0.25 → 0.5 * (0.75 - 0.25) = 0.25
+        XCTAssertEqual(prior.bonus(forConverting: .ru), 0.25, accuracy: 0.001)
+    }
+
+    func testHistoryIsBoundedByCapacity() {
+        let prior = LanguagePrior(capacity: 3, weight: 0.5)
+        for _ in 0..<10 { prior.record(.en) }
+        prior.record(.ru); prior.record(.ru); prior.record(.ru)
+        XCTAssertEqual(prior.bonus(forConverting: .ru), 0.5, accuracy: 0.001,
+                       "Старые слова должны вытесняться, иначе контекст залипает")
+    }
+
+    func testResetClearsHistory() {
+        let prior = LanguagePrior(capacity: 3, weight: 0.5)
+        for _ in 0..<3 { prior.record(.ru) }
+        prior.reset()
+        XCTAssertEqual(prior.bonus(forConverting: .ru), 0.0, accuracy: 0.001)
+    }
+}
+```
+
+Дополнить `Tests/SwitcherTests/LayoutDetectorCalibrationTests.swift`:
+
+```swift
+    /// Контекст решает там, где одно слово нерешаемо.
+    /// «руки» набранное в английской раскладке даёт "hera": delta ≈ +0.25,
+    /// ниже порога 0.5 — без контекста слово останется английским.
+    /// После трёх русских слов эффективный порог падает до 0.0 и слово
+    /// исправляется.
+    func testContextResolvesAmbiguousWord() throws {
+        let models: [Layout: TrigramModel] = [.en: try TrigramModel.bundled(.en),
+                                              .ru: try TrigramModel.bundled(.ru)]
+        let typed = try XCTUnwrap(mapper.transpose("руки", from: .ru, to: .en))
+
+        let without = LayoutDetector(models: models, mapper: mapper, validator: nil)
+        XCTAssertEqual(without.evaluate(word: typed, currentLayout: .en, trigger: .wordBoundary),
+                       .keep, "Без контекста слово на грани оставляем как есть")
+
+        let prior = LanguagePrior(capacity: 3, weight: 0.5)
+        for _ in 0..<3 { prior.record(.ru) }
+        let with = LayoutDetector(models: models, mapper: mapper, validator: nil, prior: prior)
+        XCTAssertEqual(with.evaluate(word: typed, currentLayout: .en, trigger: .wordBoundary),
+                       .convert(to: .ru, text: "руки"),
+                       "Русский контекст должен склонять решение в пользу русского")
+    }
+
+    /// Контекст не должен ломать смешанный текст: частотное английское слово
+    /// остаётся английским даже посреди русского.
+    func testContextDoesNotBreakCommonEnglishWordInRussianText() throws {
+        let models: [Layout: TrigramModel] = [.en: try TrigramModel.bundled(.en),
+                                              .ru: try TrigramModel.bundled(.ru)]
+        let prior = LanguagePrior(capacity: 3, weight: 0.5)
+        for _ in 0..<3 { prior.record(.ru) }
+        let detector = LayoutDetector(models: models, mapper: mapper, validator: nil, prior: prior)
+        for word in ["here", "the", "code", "file", "test"] {
+            XCTAssertEqual(detector.evaluate(word: word, currentLayout: .en, trigger: .wordBoundary),
+                           .keep, "«\(word)» — частотное английское слово, контекст его не перебивает")
+        }
+    }
+```
+
+- [ ] **Step 2: Убедиться, что тест падает**
+
+Run: `swift test --filter LanguagePriorTests 2>&1 | tail -5`
+Expected: FAIL — `cannot find 'LanguagePrior' in scope`
+
+- [ ] **Step 3: Реализовать LanguagePrior**
+
+```swift
+import Foundation
+
+/// Язык последних подтверждённых слов.
+///
+/// Нужен для случаев, принципиально неразрешимых по одному слову: 0.68%
+/// словаря составляют пары вида «руку» ←→ «here», где обе интерпретации —
+/// настоящие слова, и нажатия клавиш физически одинаковы. Никакая модель
+/// одного слова их не различает; язык соседей — единственный сигнал.
+///
+/// Вес намеренно умеренный: при полностью однородном контексте порог
+/// сдвигается на 0.5, что переворачивает пограничные слова («руки», «еще»,
+/// «душ»), но не трогает частотные слова другого языка («here», delta −0.44).
+/// Более агрессивный вес ломал бы смешанный текст.
+public final class LanguagePrior {
+
+    private var history: [Layout] = []
+    private let capacity: Int
+    private let weight: Double
+    private let lock = NSLock()
+
+    public init(capacity: Int = 3, weight: Double = 0.5) {
+        self.capacity = max(1, capacity)
+        self.weight = weight
+    }
+
+    /// Запоминает язык подтверждённого слова. Вызывается только на границе
+    /// слова: на паузе и ранней конверсии слово ещё может измениться.
+    public func record(_ layout: Layout) {
+        lock.lock(); defer { lock.unlock() }
+        history.append(layout)
+        if history.count > capacity { history.removeFirst(history.count - capacity) }
+    }
+
+    /// Сбрасывается вместе с буфером: смена приложения, клик мышью, смена
+    /// фокуса означают, что предыдущий контекст больше не относится к делу.
+    public func reset() {
+        lock.lock(); defer { lock.unlock() }
+        history.removeAll(keepingCapacity: true)
+    }
+
+    /// Сдвиг порога для конверсии в `to`. Положительное значение облегчает
+    /// конверсию, отрицательное — ужесточает. Диапазон [-weight, +weight].
+    public func bonus(forConverting to: Layout) -> Double {
+        lock.lock(); defer { lock.unlock() }
+        guard !history.isEmpty else { return 0 }
+        let matching = history.filter { $0 == to }.count
+        let share = Double(matching) / Double(history.count)
+        return weight * (share - (1.0 - share))
+    }
+}
+```
+
+- [ ] **Step 4: Подключить приоритет к детектору**
+
+В `LayoutDetector` добавить хранимое свойство и параметр инициализатора:
+
+```swift
+    private let prior: LanguagePrior?
+
+    public init(
+        models: [Layout: TrigramModel],
+        mapper: LayoutMapper,
+        validator: WordValidating?,
+        prior: LanguagePrior? = nil,
+        thresholds: DetectorThresholds = .calibrated
+    ) {
+        self.models     = models
+        self.mapper     = mapper
+        self.validator  = validator
+        self.prior      = prior
+        self.thresholds = thresholds
+    }
+```
+
+В `evaluate`, после выбора `threshold` по триггеру и перед сравнением,
+применить сдвиг:
+
+```swift
+        // Контекст соседних слов сдвигает порог: там, где одно слово
+        // неразрешимо, язык предыдущих слов — единственный сигнал.
+        let effective = threshold - (prior?.bonus(forConverting: target) ?? 0)
+
+        if let currentScore = models[currentLayout]?.meanLogProb(word, terminated: terminated) {
+            guard targetScore - currentScore > effective else { return .keep }
+        } else {
+            guard targetScore > thresholds.absoluteTarget - (prior?.bonus(forConverting: target) ?? 0)
+            else { return .keep }
+        }
+        return .convert(to: target, text: converted)
+```
+
+- [ ] **Step 5: Проверить тесты**
+
+Run: `swift test --filter "LanguagePriorTests|LayoutDetectorCalibrationTests" 2>&1 | tail -10`
+Expected: PASS. Если `testContextResolvesAmbiguousWord` падает — сверить фактическую `delta` для этого слова прогоном sweep и при необходимости подобрать другое пограничное слово из выданной таблицы, а не менять вес.
+
+- [ ] **Step 6: Коммит**
+
+```bash
+git add Sources/Switcher/Core/Detection/LanguagePrior.swift \
+        Sources/Switcher/Core/Detection/LayoutDetector.swift \
+        Tests/SwitcherTests/LanguagePriorTests.swift \
+        Tests/SwitcherTests/LayoutDetectorCalibrationTests.swift
+git commit -m "feat: LanguagePrior — контекст последних слов
+
+0.68% словаря принципиально неоднозначны («руку» ←→ «here»): по одному
+слову они неразрешимы в принципе, их delta лежит вокруг нуля. Язык
+соседних слов сдвигает порог на 0.5 при однородном контексте —
+достаточно, чтобы перевернуть пограничные случаи, и недостаточно,
+чтобы сломать смешанный текст."
 ```
 
 ---
@@ -2887,6 +3120,7 @@ public final class SwitchCoordinator: EventTapDelegate {
     private let buffer = KeystrokeBuffer()
     private let ax = AXTextClient()
     private let sources = InputSourceManager()
+    private let prior = LanguagePrior()
     private let work = DispatchQueue(label: "com.switcher.work", qos: .userInitiated)
 
     private var mapper: LayoutMapper?
@@ -2972,7 +3206,8 @@ public final class SwitchCoordinator: EventTapDelegate {
         }
         detector = LayoutDetector(models: [.en: en, .ru: ru],
                                   mapper: mapper,
-                                  validator: SystemWordValidator())
+                                  validator: SystemWordValidator(),
+                                  prior: prior)
     }
 
     // MARK: - EventTapDelegate (вызывается на потоке тапа)
@@ -2995,6 +3230,9 @@ public final class SwitchCoordinator: EventTapDelegate {
         case .resetCause, .mouseDown:
             pauseWorkItem?.cancel()
             buffer.reset()
+            // Контекст предыдущих слов больше не относится к делу:
+            // каретка уехала или пользователь ушёл в другое место.
+            prior.reset()
             lastSwitch = nil
 
         case .modifierOnly(let keyCode):
@@ -3033,7 +3271,13 @@ public final class SwitchCoordinator: EventTapDelegate {
 
             guard case .convert(let target, let text) = detector.evaluate(
                 word: word.text, currentLayout: layout, trigger: trigger
-            ) else { return }
+            ) else {
+                // Слово оставлено как есть — оно тоже контекст.
+                // Запоминаем только на границе слова: на паузе и ранней
+                // конверсии слово ещё может быть дописано.
+                if trigger == .wordBoundary { self.prior.record(layout) }
+                return
+            }
 
             self.apply(word: word, replacement: text, target: target,
                        bundleID: bundleID, isCorrection: false)
@@ -3050,6 +3294,7 @@ public final class SwitchCoordinator: EventTapDelegate {
 
         if !isCorrection { switchLayout(to: target, completion: {}) }
         buffer.reset()
+        prior.record(target)   // подтверждённое слово — контекст для следующих
 
         let info = LastSwitchInfo(
             originalWord: word.text, replacedWith: replacement,
@@ -3227,6 +3472,7 @@ git commit -m "docs: описание нового ядра
 | Единый путь детекции, три повода | 12 |
 | Триграммная модель, генератор, вшитый ресурс | 4, 5 |
 | Калибровка порогов тестом | 6 |
+| Контекст соседних слов (добавлено после спеки) | 6b |
 | Словарный override, `NSSpellChecker` в фоне с TTL | 6, 12 |
 | Ранняя конверсия по префиксу, минимум 5 символов | 5, 6 |
 | GuardRules: URL, пути, пароли, исключения | 7 |
@@ -3250,6 +3496,7 @@ git commit -m "docs: описание нового ядра
 - `keyboardSetUnicodeString` кладёт строку «привет» целиком в одно событие (round-trip вернул 6 символов) — стратегия C реализуема как задумано.
 - Триграммная модель на 4000 частотных слов разделяет классы с FP 0.00% и FN 1.01% при пороге +0.5. Пороги в плане — измеренные, не назначенные.
 - Знаки препинания НЕ являются границей слова: «любовь» набирается как `k.,jdm`. Из-за этого 15% русских слов не оцениваются английской моделью, и для них введена отдельная ветка `absoluteTarget`. Эта ветка появилась в результате self-review плана, в исходной спеке её не было.
+- Потолок точности для модели одного слова измерен: 0.68% словаря принципиально неоднозначны («руку» ←→ «here»). Триграммная модель даёт FN 1.01%, то есть до теоретического предела остаётся 0.33 п.п. Это и был ответ на вопрос «не взять ли нейросеть»: резерв не в классе модели, а в контексте — отсюда Task 6b. Вес приоритета 0.5 подобран по замеренному распределению `delta` неоднозначных пар (медиана −0.04, 79% в полосе от −0.5 до +1.0).
 
 **Известные компромиссы, зафиксированные осознанно:**
 
