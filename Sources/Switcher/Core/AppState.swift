@@ -135,7 +135,8 @@ public class AppState: ObservableObject {
 
     // MARK: - Engine
 
-    public let engine: KeyboardEngine
+    // KeyboardEngine временно отключён (Task 3, до Task 11) — используется заглушка.
+    public let engine: KeyboardEngineStub
     private var layoutObserver: NSObjectProtocol?
 
     public init() {
@@ -149,7 +150,7 @@ public class AppState: ObservableObject {
         launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
         dictionary           = savedDict
 
-        engine = KeyboardEngine()
+        engine = KeyboardEngineStub()
         engine.autoSwitchEnabled  = autoSwitchEnabled
         engine.doubleShiftEnabled = doubleShiftEnabled
         engine.spellCheckEnabled  = spellCheckEnabled

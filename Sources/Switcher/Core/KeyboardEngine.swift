@@ -1,3 +1,8 @@
+// Временно отключено: LayoutConverter удалён в Task 3 (заменён на LayoutMapper),
+// а KeyboardEngine ещё не переведён на новое ядро. Файл целиком выключен,
+// чтобы не мешать сборке до Task 11, где KeyboardEngine удаляется совсем.
+// Вместо него AppState использует KeyboardEngineStub (см. KeyboardEngineStub.swift).
+#if false
 import Foundation
 import ApplicationServices
 import Carbon
@@ -427,3 +432,4 @@ public final class KeyboardEngine {
         return Double(matching.count) / Double(letters.count)
     }
 }
+#endif
