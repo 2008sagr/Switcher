@@ -428,13 +428,20 @@ final class LayoutMapperTests: XCTestCase {
     /// «любовь» на ПК-раскладке набирается как "k.,jdm", а на «Русской» — иначе.
     /// Обе должны отработать без хардкода таблицы.
     func testTransposesPunctuationPositionedLetters() throws {
+        var tested = 0
         for layoutID in ["com.apple.keylayout.RussianWin", "com.apple.keylayout.Russian"] {
             guard let mapper = systemMapper(ruLayoutID: layoutID) else { continue }
+            tested += 1
             let typed = try XCTUnwrap(mapper.transpose("любовь", from: .ru, to: .en),
                                       "\(layoutID): прямое преобразование должно работать")
             XCTAssertEqual(mapper.transpose(typed, from: .en, to: .ru), "любовь",
                            "\(layoutID): round-trip должен вернуть исходное слово")
         }
+        // Без этой проверки тест проходит ВХОЛОСТУЮ на машине без русских
+        // раскладок: цикл не выполняется, ни один ассерт не срабатывает, и
+        // харнесс засчитывает тест как пройденный. Это центральная проверка
+        // задачи — она обязана либо реально отработать, либо честно пропуститься.
+        try XCTSkipUnless(tested > 0, "Ни одна русская раскладка не установлена")
     }
 
     func testPreservesCase() throws {
