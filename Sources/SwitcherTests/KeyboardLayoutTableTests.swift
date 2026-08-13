@@ -42,6 +42,48 @@ func testLoadsUSLayoutFromSystem() throws {
     XCTAssertEqual(table.character(keyCode: 12, shift: true),  "Q")
 }
 
+/// Коллизия в обратном индексе: один символ доступен с двух разных клавиш.
+/// Контракт `init(map:)` — побеждает меньший keyCode. На этот контракт
+/// напрямую опирается LayoutMapper из следующей задачи.
+func testReverseLookupPrefersSmallerKeyCode() throws {
+    let table = KeyboardLayoutTable(map: [
+        key(20, false): "q",
+        key(5,  false): "q"
+    ])
+    let hit = try XCTUnwrap(table.keyCode(for: "q"))
+    XCTAssertEqual(hit.keyCode, 5)
+}
+
+/// Русская раскладка должна грузиться не хуже американской: на клавише,
+/// где у US стоит знак препинания, у RU — буква. Именно это ломала
+/// захардкоженная таблица на 70 пар.
+func testLoadsRussianLayoutFromSystem() throws {
+    try XCTSkipUnless(systemLayoutData(matching: "com.apple.keylayout.RussianWin") != nil,
+                      "Раскладка RussianWin отсутствует в системе")
+    let usData = try XCTUnwrap(systemLayoutData(matching: "com.apple.keylayout.US"))
+    let ruData = try XCTUnwrap(systemLayoutData(matching: "com.apple.keylayout.RussianWin"))
+    let kbdType = UInt32(LMGetKbdType())
+    let us = try XCTUnwrap(KeyboardLayoutTable.load(layoutData: usData, keyboardType: kbdType))
+    let ru = try XCTUnwrap(KeyboardLayoutTable.load(layoutData: ruData, keyboardType: kbdType))
+
+    // Клавиша точки с запятой (keyCode 41): на US — ";", на RU — буква "ж".
+    let usChar = try XCTUnwrap(us.character(keyCode: 41, shift: false))
+    let ruChar = try XCTUnwrap(ru.character(keyCode: 41, shift: false))
+    XCTAssertEqual(usChar, ";")
+    XCTAssertTrue(ruChar.isLetter, "На клавише ';' в RU должна быть буква, получили \(ruChar)")
+    XCTAssertNotEqual(usChar, ruChar)
+}
+
+/// Усечённые данные раскладки не должны приводить к чтению за границей буфера —
+/// `load` обязан безопасно вернуть nil. Регрессия на guard в `load()`.
+func testLoadTruncatedDataReturnsNilSafely() throws {
+    let truncated = Data(repeating: 0, count: 4)
+    XCTAssertNil(KeyboardLayoutTable.load(layoutData: truncated, keyboardType: 0))
+
+    let empty = Data()
+    XCTAssertNil(KeyboardLayoutTable.load(layoutData: empty, keyboardType: 0))
+}
+
 func systemLayoutData(matching id: String) -> Data? {
     let filter = [kTISPropertyInputSourceType as String: kTISTypeKeyboardLayout as String]
     guard let list = TISCreateInputSourceList(filter as CFDictionary, true)?
@@ -61,5 +103,8 @@ func systemLayoutData(matching id: String) -> Data? {
 let keyboardLayoutTableTests: [TestCase] = [
     TestCase("testLookupByKeyCode", testLookupByKeyCode),
     TestCase("testReverseLookupByCharacter", testReverseLookupByCharacter),
-    TestCase("testLoadsUSLayoutFromSystem", testLoadsUSLayoutFromSystem)
+    TestCase("testLoadsUSLayoutFromSystem", testLoadsUSLayoutFromSystem),
+    TestCase("testReverseLookupPrefersSmallerKeyCode", testReverseLookupPrefersSmallerKeyCode),
+    TestCase("testLoadsRussianLayoutFromSystem", testLoadsRussianLayoutFromSystem),
+    TestCase("testLoadTruncatedDataReturnsNilSafely", testLoadTruncatedDataReturnsNilSafely)
 ]

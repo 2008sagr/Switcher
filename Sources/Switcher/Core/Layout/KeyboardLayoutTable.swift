@@ -42,7 +42,12 @@ public struct KeyboardLayoutTable {
         var map: [UInt32: Character] = [:]
 
         let ok = layoutData.withUnsafeBytes { raw -> Bool in
-            guard let base = raw.baseAddress else { return false }
+            // Без этой проверки усечённые или повреждённые данные раскладки
+            // приводят к чтению за границей буфера — неопределённому поведению
+            // вместо безопасного nil. `load` — публичный API, полагаться на
+            // валидность входа нельзя.
+            guard raw.count >= MemoryLayout<UCKeyboardLayout>.size,
+                  let base = raw.baseAddress else { return false }
             let layout = base.assumingMemoryBound(to: UCKeyboardLayout.self)
 
             for code in keyCodes {
