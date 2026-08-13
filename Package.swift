@@ -7,7 +7,8 @@ let package = Package(
     targets: [
         .target(
             name: "SwitcherCore",
-            path: "Sources/Switcher"
+            path: "Sources/Switcher",
+            resources: [.copy("Resources/en.trigram"), .copy("Resources/ru.trigram")]
         ),
         .executableTarget(
             name: "SwitcherApp",

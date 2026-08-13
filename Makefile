@@ -12,9 +12,13 @@ DMG_NAME   = $(APP_NAME).dmg
 # Default target: build + bundle
 all: bundle
 
-# Compile with Swift Package Manager (release mode)
+# Compile с Swift Package Manager (release mode).
+# Собираем только продукт SwitcherApp: цель SwitcherTests использует
+# @testable import и не компилируется в release-конфигурации (SwiftPM
+# не включает -enable-testing вне debug) — эта цель нужна только для
+# `swift run SwitcherTests` и не должна попадать в .app.
 build:
-	swift build -c release 2>&1
+	swift build -c release --product SwitcherApp 2>&1
 
 # Create proper .app bundle
 bundle: build
@@ -25,6 +29,7 @@ bundle: build
 	@cp $(BUILD_DIR)/SwitcherApp $(CONTENTS)/MacOS/$(APP_NAME)
 	@cp Resources/Info.plist        $(CONTENTS)/
 	@cp Resources/AppIcon.icns      $(CONTENTS)/Resources/
+	@cp -R $(BUILD_DIR)/Switcher_SwitcherCore.bundle $(CONTENTS)/Resources/
 	@echo "✅ Bundle created: $(APP_DIR)"
 
 # Ad-hoc code sign (no Apple ID needed for local use)
