@@ -19,6 +19,13 @@ public final class LayoutMapper {
 
     /// Возвращает nil, если хотя бы один символ отобразить не удалось —
     /// частичная конверсия хуже, чем отсутствие конверсии.
+    ///
+    /// Обратный поиск клавиши по символу неоднозначен при коллизии (один
+    /// символ доступен с двух физических клавиш): `KeyboardLayoutTable`
+    /// детерминированно берёт клавишу с меньшим keyCode. Если реальное
+    /// нажатие пришло с другой клавиши, результат может отличаться от
+    /// `transpose(strokes:to:)` — тот путь надёжнее, так как использует
+    /// keyCode нажатия напрямую, без обратного поиска.
     public func transpose(_ text: String, from: Layout, to: Layout) -> String? {
         guard let source = tables[from], let target = tables[to] else { return nil }
 
@@ -39,7 +46,9 @@ public final class LayoutMapper {
     }
 
     /// Отрисовывает записанные нажатия в целевой раскладке.
-    /// Точнее строкового пути: keycode известен напрямую, обратный поиск не нужен.
+    /// Точнее строкового пути: keycode известен напрямую, обратный поиск не нужен —
+    /// поэтому при коллизии обратного маппинга (см. `transpose(_:from:to:)`) этот
+    /// метод даёт корректный результат, а строковый путь может ошибиться.
     public func transpose(strokes: [KeyStroke], to: Layout) -> String? {
         guard let target = tables[to] else { return nil }
 
