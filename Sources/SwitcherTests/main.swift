@@ -10,6 +10,7 @@ let suites: [(String, [TestCase])] = [
     ("LanguagePriorTests", languagePriorTests),
     ("GuardRulesTests", guardRulesTests),
     ("KeystrokeBufferTests", keystrokeBufferTests),
+    ("EventTapControllerTests", eventTapControllerTests),
 ]
 
 exit(runSuites(suites, filter: filter))
