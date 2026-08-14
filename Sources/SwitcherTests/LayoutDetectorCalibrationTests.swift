@@ -89,10 +89,34 @@ func testCatchesWrongLayoutWords() throws {
 }
 
 /// Ранний порог строже: на границе слова он не должен ловить меньше, чем ранний.
+/// Сравнение статических констант, раскладки не нужны — fixture не вызываем.
 func testEarlyTriggerIsStricterThanWordBoundary() throws {
-    _ = try makeFixture()
     XCTAssertGreaterThan(DetectorThresholds.calibrated.early,
                          DetectorThresholds.calibrated.wordBoundary)
+}
+
+/// Ловит подмену case .pause ↔ case .early в switch по Trigger. В calibrated
+/// pause и wordBoundary совпадают (0.5), поэтому спутать .pause можно только
+/// с .early (1.2) — а проверка одного триггера в отрыве от другого такую
+/// подмену не поймает: нужно слово, чья delta лежит строго между 0.5 и 1.2,
+/// тогда .pause обязан дать convert, а .early на том же слове — keep.
+///
+/// «keyboard», опечатанное в русской раскладке, даёт "лунищфкв": delta с
+/// terminated=true (используется .pause) = 0.834, с terminated=false
+/// (используется .early — префиксный режим) = 0.721 — оба значения входят
+/// в (0.5, 1.2] с запасом. Длина 8 символов не задевает earlyMinLength=5,
+/// поэтому .early действительно оценивает слово статистикой, а не отсекает
+/// его по длине. Найдено прогоном sweep по корпусу задачи (детали — в
+/// task-6-report.md, «Фикс-раунд 3»).
+func testPauseTriggerUsesItsOwnThreshold() throws {
+    let (detector, mapper) = try makeFixture()
+    let typed = try XCTUnwrap(mapper.transpose("keyboard", from: .en, to: .ru))
+    XCTAssertEqual(detector.evaluate(word: typed, currentLayout: .ru, trigger: .pause),
+                   .convert(to: .en, text: "keyboard"),
+                   "\(typed): при пороге pause=0.5 и delta=0.834 слово должно исправляться")
+    XCTAssertEqual(detector.evaluate(word: typed, currentLayout: .ru, trigger: .early),
+                   .keep,
+                   "\(typed): при пороге early=1.2 то же слово должно остаться как есть")
 }
 
 /// Русские слова, где буквы стоят на клавишах знаков препинания.
@@ -116,19 +140,6 @@ func testCatchesWordsWithPunctuationPositionedLetters() throws {
         XCTAssertEqual(detector.evaluate(word: typed, currentLayout: .en, trigger: .wordBoundary),
                        .convert(to: .ru, text: word),
                        "\(typed) должно исправляться в «\(word)»")
-    }
-}
-
-/// Отдельная проверка самой ветки absoluteTarget: слово, где символы вне
-/// алфавита стоят ВНУТРИ, обрезкой границ не спасается и оценке английской
-/// моделью не поддаётся — значит решение принимается по абсолютной оценке цели.
-func testInternalPunctuationKeepsWordUnscorableInSourceLanguage() throws {
-    let (_, mapper) = try makeFixture()
-    let en = try TrigramModel.bundled(.en)
-    for word in ["любовь", "объезд", "съезд", "подъезд"] {
-        let typed = try XCTUnwrap(mapper.transpose(word, from: .ru, to: .en))
-        XCTAssertNil(en.meanLogProb(typed, terminated: true),
-                     "\(typed): внутренняя пунктуация делает слово неоцениваемым")
     }
 }
 
@@ -260,8 +271,8 @@ let layoutDetectorCalibrationTests: [TestCase] = [
     TestCase("testNoFalsePositivesOnCorrectlyTypedWords", testNoFalsePositivesOnCorrectlyTypedWords),
     TestCase("testCatchesWrongLayoutWords", testCatchesWrongLayoutWords),
     TestCase("testEarlyTriggerIsStricterThanWordBoundary", testEarlyTriggerIsStricterThanWordBoundary),
+    TestCase("testPauseTriggerUsesItsOwnThreshold", testPauseTriggerUsesItsOwnThreshold),
     TestCase("testCatchesWordsWithPunctuationPositionedLetters", testCatchesWordsWithPunctuationPositionedLetters),
-    TestCase("testInternalPunctuationKeepsWordUnscorableInSourceLanguage", testInternalPunctuationKeepsWordUnscorableInSourceLanguage),
     TestCase("testDoesNotTouchEnglishWordsWithTrailingPunctuation", testDoesNotTouchEnglishWordsWithTrailingPunctuation),
     TestCase("testEarlyTriggerRejectsShortPrefixes", testEarlyTriggerRejectsShortPrefixes),
     TestCase("testWordValidInCurrentLanguageIsNeverConverted", testWordValidInCurrentLanguageIsNeverConverted),

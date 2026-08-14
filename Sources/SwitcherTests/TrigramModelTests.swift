@@ -86,6 +86,29 @@ func testTrimsBoundaryPunctuation() throws {
     XCTAssertNil(en.meanLogProb("k.,jdm", terminated: true))
 }
 
+/// Внутренняя пунктуация — это то, что делает ветку absoluteTarget у
+/// LayoutDetector достижимой: пока слово с такими символами нельзя оценить
+/// моделью исходного языка, сравнивать не с чем, и решение принимается по
+/// абсолютной оценке цели (см. LayoutDetector.swift). В отличие от
+/// testTrimsBoundaryPunctuation, здесь символ вне алфавита стоит ВНУТРИ
+/// слова, а не на границе — обрезка его не убирает.
+///
+/// Перенесено из LayoutDetectorCalibrationTests: там тест сидел в наборе
+/// детектора, но не вызывал detector.evaluate() вообще — утверждал
+/// поведение TrigramModel, а не детектора. Это характеризация модели, ей
+/// место здесь. Формы — реальное транспонирование ru→en раскладкой
+/// «Русская — ПК» (получены прогоном LayoutMapper, см. task-6-report.md).
+func testInternalPunctuationKeepsWordUnscorable() throws {
+    let en = try TrigramModel.bundled(.en)
+    let cases: [(typed: String, original: String)] = [
+        ("k.,jdm", "любовь"), ("j,]tpl", "объезд"), ("c]tpl", "съезд"), ("gjl]tpl", "подъезд")
+    ]
+    for (typed, original) in cases {
+        XCTAssertNil(en.meanLogProb(typed, terminated: true),
+                     "\(typed) («\(original)»): внутренняя пунктуация делает слово неоцениваемым")
+    }
+}
+
 let trigramModelTests: [TestCase] = [
     TestCase("testLoadsBundledModels", testLoadsBundledModels),
     TestCase("testRealWordScoresHigherThanGibberish", testRealWordScoresHigherThanGibberish),
@@ -97,5 +120,6 @@ let trigramModelTests: [TestCase] = [
     TestCase("testRejectsBadMagic", testRejectsBadMagic),
     TestCase("testRejectsOversizedAlphabetWithoutCrashing", testRejectsOversizedAlphabetWithoutCrashing),
     TestCase("testRejectsTruncatedData", testRejectsTruncatedData),
-    TestCase("testTrimsBoundaryPunctuation", testTrimsBoundaryPunctuation)
+    TestCase("testTrimsBoundaryPunctuation", testTrimsBoundaryPunctuation),
+    TestCase("testInternalPunctuationKeepsWordUnscorable", testInternalPunctuationKeepsWordUnscorable)
 ]
