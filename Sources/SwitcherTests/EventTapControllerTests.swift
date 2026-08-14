@@ -82,6 +82,28 @@ func testPunctuationIsPartOfTheWord() throws {
     }
 }
 
+/// Ревью Task 9, находка 1/5: stop() теперь зовётся ещё и из deinit, поэтому
+/// обязан быть идемпотентным — повторный вызов без предварительного start()
+/// не должен падать и не должен переводить isRunning в "запущено".
+func testStopIsIdempotentWithoutStart() throws {
+    let controller = EventTapController()
+    XCTAssertFalse(controller.isRunning, "Свежесозданный контроллер не должен быть запущен")
+    controller.stop()
+    XCTAssertFalse(controller.isRunning, "stop() без start() не должен ничего ломать")
+    controller.stop()
+    XCTAssertFalse(controller.isRunning, "повторный stop() подряд обязан быть безопасен")
+}
+
+/// Ревью Task 9, находка 1: без deinit освобождение контроллера, который
+/// никогда не запускался (tap == nil), тоже должно быть безопасным —
+/// deinit просто вызывает stop(), который у пустого контроллера — no-op.
+func testDeinitWithoutStartDoesNotCrash() throws {
+    var controller: EventTapController? = EventTapController()
+    weak let weakController = controller
+    controller = nil
+    XCTAssertNil(weakController, "Контроллер должен быть освобождён без сторонних удержаний")
+}
+
 let eventTapControllerTests: [TestCase] = [
     TestCase("testInjectSourceCarriesMarker", testInjectSourceCarriesMarker),
     TestCase("testInjectSourceUsesPrivateState", testInjectSourceUsesPrivateState),
@@ -91,4 +113,6 @@ let eventTapControllerTests: [TestCase] = [
     TestCase("testClassifiesMouseDown", testClassifiesMouseDown),
     TestCase("testSpaceIsWordBoundary", testSpaceIsWordBoundary),
     TestCase("testPunctuationIsPartOfTheWord", testPunctuationIsPartOfTheWord),
+    TestCase("testStopIsIdempotentWithoutStart", testStopIsIdempotentWithoutStart),
+    TestCase("testDeinitWithoutStartDoesNotCrash", testDeinitWithoutStartDoesNotCrash),
 ]

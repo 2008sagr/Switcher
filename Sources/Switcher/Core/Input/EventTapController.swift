@@ -16,6 +16,20 @@ public enum TapEvent {
     case mouseDown
 }
 
+/// Получатель разобранных событий тапа.
+///
+/// КОНТРАКТ (нарушение замораживает клавиатуру во всей системе):
+/// `didObserve` вызывается СИНХРОННО прямо внутри callback'а CGEventTap, на
+/// выделенном потоке тапа. Перенос тапа на свой поток решает только проблему
+/// «main thread занят посторонним» — он НЕ решает «сам callback выполняется
+/// дольше таймаута macOS». Если реализация `didObserve` заблокируется —
+/// обращение к Accessibility API, проверка орфографии, чтение файла, сеть,
+/// таймер, любой блокирующий примитив (lock, semaphore.wait, DispatchQueue.sync
+/// на занятую очередь) — то воспроизведётся ровно тот же
+/// kCGEventTapDisabledByTimeout, только на выделенном потоке вместо main.
+/// Реализация ОБЯЗАНА вернуться немедленно: разобрать событие в памяти,
+/// поставить в очередь/буфер и отдать управление. Вся потенциально
+/// блокирующая работа переносится на другую очередь/поток самим делегатом.
 public protocol EventTapDelegate: AnyObject {
     func tap(_ tap: EventTapController, didObserve event: TapEvent)
 }
@@ -48,7 +62,15 @@ public final class EventTapController {
     /// .privateState — независимое состояние модификаторов: с .hidSystemState
     /// удерживаемый пользователем Shift попадал бы в инжектируемый текст.
     public static let injectSource: CGEventSource = {
-        let source = CGEventSource(stateID: .privateState)!
+        guard let source = CGEventSource(stateID: .privateState) else {
+            // CGEventSource(stateID:) документированно может вернуть nil.
+            // Источник инжекта — единственный на весь процесс и нужен для
+            // любой замены текста; без него функциональность приложения
+            // теряет смысл целиком. Внятный fatalError лучше, чем слепой
+            // форс-анврап: тот же крэш, но с диагностикой в консоли, а не
+            // безымянный "Fatal error: Unexpectedly found nil" в рантайме.
+            fatalError("[Switcher] Не удалось создать CGEventSource(.privateState) — инжект текста невозможен")
+        }
         source.userData = syntheticMarker
         return source
     }()
@@ -61,6 +83,15 @@ public final class EventTapController {
     private var threadRunLoop: CFRunLoop?
 
     public init() {}
+
+    deinit {
+        // Обязателен: указатель на self передан в тап через passUnretained,
+        // а run loop source и выделенный поток живут независимо от ARC —
+        // CFRunLoopRun() не вернётся, пока его не остановят. Без этого
+        // освобождение контроллера без вызова stop() оставляет системный
+        // хук с указателем на освобождённую память.
+        stop()
+    }
 
     public var isRunning: Bool { tap != nil }
 
@@ -97,11 +128,19 @@ public final class EventTapController {
         // Выделенный поток: занятость main thread не должна приводить
         // к таймауту тапа и заморозке ввода в системе.
         let ready = DispatchSemaphore(value: 0)
+        // Узкое окно гонки (ревью, находка 5): если единственный внешний
+        // владелец контроллера освободит его между worker.start() и первой
+        // строкой замыкания, weak self внутри замыкания станет nil, guard
+        // провалится и тап реально не включится — но поток к этому моменту
+        // уже создан. didEnable фиксирует, что произошло НА САМОМ ДЕЛЕ,
+        // и start() возвращает честный результат, а не "true" по умолчанию.
+        var didEnable = false
         let worker = Thread { [weak self] in
             guard let self, let source = self.runLoopSource else { ready.signal(); return }
             self.threadRunLoop = CFRunLoopGetCurrent()
             CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
             CGEvent.tapEnable(tap: created, enable: true)
+            didEnable = true
             ready.signal()
             CFRunLoopRun()
         }
@@ -111,10 +150,18 @@ public final class EventTapController {
         thread = worker
         ready.wait()
 
+        guard didEnable else {
+            print("[Switcher] Контроллер освобождён во время старта — тап не включён")
+            return false
+        }
+
         print("[Switcher] Event tap запущен на выделенном потоке")
         return true
     }
 
+    /// Идемпотентен: безопасно звать, если тап не запускался или уже
+    /// остановлен — это важно, потому что теперь stop() вызывается ещё и
+    /// из deinit, и там повторный/лишний вызов не должен падать.
     public func stop() {
         guard let tap else { return }
         CGEvent.tapEnable(tap: tap, enable: false)
@@ -159,10 +206,12 @@ public final class EventTapController {
                 return .resetCause("модификатор")
             }
             switch keyCode {
-            case 51:  return .backspace                       // Delete
-            case 48:  return .resetCause("tab")
-            case 53:  return .resetCause("escape")
-            case 123, 124, 125, 126: return .resetCause("стрелка")
+            case CGKeyCode(kVK_Delete):    return .backspace
+            case CGKeyCode(kVK_Tab):       return .resetCause("tab")
+            case CGKeyCode(kVK_Escape):    return .resetCause("escape")
+            case CGKeyCode(kVK_LeftArrow), CGKeyCode(kVK_RightArrow),
+                 CGKeyCode(kVK_DownArrow), CGKeyCode(kVK_UpArrow):
+                return .resetCause("стрелка")
             default:  break
             }
 
