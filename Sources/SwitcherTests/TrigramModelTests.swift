@@ -57,6 +57,35 @@ func testRejectsBadMagic() throws {
     XCTAssertThrowsError(try TrigramModel(data: Data("XXXX".utf8)))
 }
 
+/// Заголовок с огромным размером алфавита обязан дать ошибку, а не уронить
+/// процесс: size*size*size переполняет Int раньше проверки на усечённость.
+func testRejectsOversizedAlphabetWithoutCrashing() throws {
+    var data = Data("STG2".utf8)
+    data.append(contentsOf: withUnsafeBytes(of: UInt32(0xC000_0000).littleEndian) { Array($0) })
+    data.append(Data(repeating: 0, count: 64))
+    XCTAssertThrowsError(try TrigramModel(data: data))
+}
+
+/// Верная магия и правдоподобный алфавит, но данных после заголовка не хватает.
+func testRejectsTruncatedData() throws {
+    var data = Data("STG2".utf8)
+    data.append(contentsOf: withUnsafeBytes(of: UInt32(28).littleEndian) { Array($0) })
+    data.append(Data(repeating: 0, count: 28 * 4))   // алфавит есть, таблицы нет
+    XCTAssertThrowsError(try TrigramModel(data: data))
+}
+
+/// Знак препинания на конце не должен мешать оценке: без обрезки границ
+/// английские слова со знаком препинания не оценивались вовсе.
+func testTrimsBoundaryPunctuation() throws {
+    let en = try TrigramModel.bundled(.en)
+    let plain = try XCTUnwrap(en.meanLogProb("hello", terminated: true))
+    let dotted = try XCTUnwrap(en.meanLogProb("hello.", terminated: true))
+    XCTAssertEqual(plain, dotted, accuracy: 0.0001)
+    // Внутренние символы вне алфавита по-прежнему делают слово неоцениваемым:
+    // на этом держится ветка absoluteTarget.
+    XCTAssertNil(en.meanLogProb("k.,jdm", terminated: true))
+}
+
 let trigramModelTests: [TestCase] = [
     TestCase("testLoadsBundledModels", testLoadsBundledModels),
     TestCase("testRealWordScoresHigherThanGibberish", testRealWordScoresHigherThanGibberish),
@@ -65,5 +94,8 @@ let trigramModelTests: [TestCase] = [
     TestCase("testReturnsNilForTooShortWord", testReturnsNilForTooShortWord),
     TestCase("testPrefixScoringIgnoresWordEnd", testPrefixScoringIgnoresWordEnd),
     TestCase("testIsCaseInsensitive", testIsCaseInsensitive),
-    TestCase("testRejectsBadMagic", testRejectsBadMagic)
+    TestCase("testRejectsBadMagic", testRejectsBadMagic),
+    TestCase("testRejectsOversizedAlphabetWithoutCrashing", testRejectsOversizedAlphabetWithoutCrashing),
+    TestCase("testRejectsTruncatedData", testRejectsTruncatedData),
+    TestCase("testTrimsBoundaryPunctuation", testTrimsBoundaryPunctuation)
 ]

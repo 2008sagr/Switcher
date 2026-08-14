@@ -26,6 +26,10 @@ public final class TrigramModel {
         }
 
         let size = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self) })
+        // Верхняя граница обязательна: size приходит из файла без проверок, а
+        // size*size*size переполняет Int раньше, чем сработает guard ниже, и
+        // процесс падает по trap вместо честной ошибки. Реальные алфавиты — 28 и 34.
+        guard size >= 2, size <= 256 else { throw TrigramModelError.truncated }
         let alphabetBytes = size * 4
         let probsCount    = size * size * size
         guard data.count == 8 + alphabetBytes + probsCount * 4 else {
@@ -65,12 +69,26 @@ public final class TrigramModel {
     /// Нормировка на количество триграмм убирает перекос в пользу коротких слов:
     /// без неё длинное слово всегда проигрывало бы короткому.
     ///
+    /// Ведущие и хвостовые символы вне алфавита обрезаются перед оценкой.
+    /// Это нужно для реального сценария: слово, набранное не в той раскладке,
+    /// после обратной конверсии может получить знак препинания на границе —
+    /// например, «hello.», где точка получилась из конвертированной «ю».
+    /// Без обрезки такое слово вообще не оценивалось бы (см. guard по
+    /// алфавиту ниже), и детектор пропускал бы весь класс слов со знаками
+    /// препинания на конце. ВНУТРЕННИЕ символы вне алфавита не трогаем —
+    /// именно они отличают "k.,jdm" («любовь», буквы на клавишах знаков
+    /// препинания) от обычного слова и уводят решение детектора в отдельную
+    /// ветку (абсолютная оценка цели вместо разницы моделей).
+    ///
     /// - Parameter terminated: `true` — слово дописано (`^^слово^`),
     ///   `false` — оценивается префикс (`^^сло`), концевой маркер не добавляется.
-    /// - Returns: `nil`, если слово короче двух символов или содержит символы
-    ///   вне алфавита модели — такое слово этой модели не принадлежит.
+    /// - Returns: `nil`, если слово короче двух символов (после обрезки границ)
+    ///   или содержит внутри символы вне алфавита модели — такое слово этой
+    ///   модели не принадлежит.
     public func meanLogProb(_ word: String, terminated: Bool) -> Double? {
-        let lower = word.lowercased()
+        var lower = Substring(word.lowercased())
+        while let first = lower.first, indexOf[first] == nil { lower = lower.dropFirst() }
+        while let last = lower.last, indexOf[last] == nil { lower = lower.dropLast() }
         guard lower.count >= 2 else { return nil }
 
         var ids = [Self.boundaryIndex, Self.boundaryIndex]
