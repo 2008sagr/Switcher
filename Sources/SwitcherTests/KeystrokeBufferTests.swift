@@ -79,6 +79,73 @@ func testDigitsDoNotFormWord() throws {
     XCTAssertNil(buffer.currentWord, "Слово должно содержать хотя бы одну букву")
 }
 
+/// Находка 5: `strokes.count` не проверяет ни keyCode, ни shift. Реализация,
+/// хранящая только Character и синтезирующая фиктивные `KeyStroke(keyCode: 0, ...)`,
+/// прошла бы старые тесты. Хранение keycode — смысл компонента: без него нельзя
+/// переиграть слово в другой раскладке нажатиями тех же физических клавиш —
+/// единственная стратегия замены, работающая в терминалах.
+func testStrokesPreserveKeyCodeAndShift() throws {
+    let buffer = KeystrokeBuffer(maxLength: 50)
+    type("AbC", into: buffer)
+    let word = try XCTUnwrap(buffer.currentWord)
+    let expected = [stroke("A", 0), stroke("b", 1), stroke("C", 2)]
+    XCTAssertEqual(word.strokes, expected,
+                   "keyCode и shift каждого нажатия должны сохраняться дословно")
+}
+
+/// Находка 6, часть 1: проверка `count >= maxLength` стоит ДО append. Ровно на
+/// maxLength символах сброса ещё нет — буфер содержит их все.
+func testAtMaxLengthBufferNotYetReset() throws {
+    let buffer = KeystrokeBuffer(maxLength: 5)
+    type("abcde", into: buffer) // ровно maxLength символов
+    XCTAssertEqual(buffer.currentWord?.text, "abcde",
+                   "На ровно maxLength символах сброса ещё не происходит")
+}
+
+/// Находка 6, часть 2: символ maxLength+1 переполняет буфер. Сброс происходит
+/// ДО append, поэтому в буфере остаётся только этот один новый символ, а не
+/// последние maxLength символов и не пустой буфер.
+func testOneOverMaxLengthResetsToSingleChar() throws {
+    let buffer = KeystrokeBuffer(maxLength: 5)
+    type("abcdef", into: buffer) // maxLength + 1 символ
+    XCTAssertEqual(buffer.currentWord?.text, "f",
+                   "Шестой символ сначала вызывает полный сброс, потом добавляется сам — " +
+                   "в буфере остаётся только он один")
+}
+
+/// Находка 7: строка из одних знаков препинания (без цифр и букв) тоже не
+/// должна считаться словом — до сих пор проверялось только на цифрах.
+func testPunctuationOnlyDoesNotFormWord() throws {
+    let buffer = KeystrokeBuffer(maxLength: 50)
+    type("!?.,;", into: buffer)
+    XCTAssertNil(buffer.currentWord, "Строка из одних знаков препинания не должна считаться словом")
+}
+
+/// Находка 8: `textUTF16Length` существует потому, что диапазоны Accessibility
+/// считаются в UTF-16, а не в графемах. Эмодзи вне BMP — один Character
+/// (одна графема), но два code unit'а UTF-16: без этого свойства замена
+/// стёрла бы не тот диапазон текста.
+func testTextUTF16LengthDiffersFromGraphemeCountForEmoji() throws {
+    let buffer = KeystrokeBuffer(maxLength: 50)
+    type("hi👍", into: buffer)
+    let word = try XCTUnwrap(buffer.currentWord)
+    XCTAssertEqual(word.text.count, 3, "графемно — 3 символа (h, i, 👍)")
+    XCTAssertEqual(word.textUTF16Length, 4,
+                   "в UTF-16 эмодзи вне BMP занимает 2 code unit'а — итого 1+1+2")
+}
+
+/// Находка 8 (продолжение): та же проверка для `tailUTF16Length` — разделитель
+/// тоже может оказаться символом вне BMP.
+func testTailUTF16LengthDiffersFromGraphemeCountForEmoji() throws {
+    let buffer = KeystrokeBuffer(maxLength: 50)
+    type("hi", into: buffer)
+    let snapshot = buffer.wordEndedBy(stroke("😀", 99))
+    let word = try XCTUnwrap(snapshot)
+    XCTAssertEqual(word.tail.count, 1, "графемно — один символ-разделитель")
+    XCTAssertEqual(word.tailUTF16Length, 2,
+                   "в UTF-16 — два code unit'а (суррогатная пара)")
+}
+
 let keystrokeBufferTests: [TestCase] = [
     TestCase("testAccumulatesWord", testAccumulatesWord),
     TestCase("testBackspaceRemovesLastStroke", testBackspaceRemovesLastStroke),
@@ -89,4 +156,10 @@ let keystrokeBufferTests: [TestCase] = [
     TestCase("testWordEndOnEmptyBufferReturnsNil", testWordEndOnEmptyBufferReturnsNil),
     TestCase("testOverflowResetsBuffer", testOverflowResetsBuffer),
     TestCase("testDigitsDoNotFormWord", testDigitsDoNotFormWord),
+    TestCase("testStrokesPreserveKeyCodeAndShift", testStrokesPreserveKeyCodeAndShift),
+    TestCase("testAtMaxLengthBufferNotYetReset", testAtMaxLengthBufferNotYetReset),
+    TestCase("testOneOverMaxLengthResetsToSingleChar", testOneOverMaxLengthResetsToSingleChar),
+    TestCase("testPunctuationOnlyDoesNotFormWord", testPunctuationOnlyDoesNotFormWord),
+    TestCase("testTextUTF16LengthDiffersFromGraphemeCountForEmoji", testTextUTF16LengthDiffersFromGraphemeCountForEmoji),
+    TestCase("testTailUTF16LengthDiffersFromGraphemeCountForEmoji", testTailUTF16LengthDiffersFromGraphemeCountForEmoji),
 ]
