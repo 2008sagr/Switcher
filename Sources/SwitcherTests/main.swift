@@ -11,6 +11,7 @@ let suites: [(String, [TestCase])] = [
     ("GuardRulesTests", guardRulesTests),
     ("KeystrokeBufferTests", keystrokeBufferTests),
     ("EventTapControllerTests", eventTapControllerTests),
+    ("ClipboardGuardTests", clipboardGuardTests),
 ]
 
 exit(runSuites(suites, filter: filter))
