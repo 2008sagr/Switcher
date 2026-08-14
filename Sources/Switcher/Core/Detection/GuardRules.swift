@@ -38,17 +38,27 @@ public struct GuardRules {
 
     /// Грубая оценка «это пароль или капча, а не слово».
     ///
-    /// Правило Caramba: длиннее шести знаков и одновременно содержит строчные,
-    /// заглавные и цифры или знаки. Закрывает случаи, где `AXSecureTextField`
-    /// не срабатывает: sudo в терминале, поля Electron, капчи.
+    /// Закрывает случаи, где `AXSecureTextField` не срабатывает: sudo в
+    /// терминале, поля Electron, капчи.
     public static func looksLikeSecret(_ word: String) -> Bool {
         guard word.count > 6 else { return false }
-        var hasLower = false, hasUpper = false, hasOther = false
+        var hasUpper = false, hasOther = false
         for char in word {
-            if char.isLowercase { hasLower = true }
-            else if char.isUppercase { hasUpper = true }
+            if char.isUppercase { hasUpper = true }
             else if char.isNumber || char.isSymbol || char.isPunctuation { hasOther = true }
         }
-        return hasLower && hasUpper && hasOther
+        // Заглавная буква и цифра или знак при длине больше шести — почти всегда
+        // пароль. Требовать вдобавок строчную нельзя: пароль, набранный со
+        // случайно включённым Caps Lock, строчных не содержит, а это самый
+        // дорогой случай — в терминале он не отображается на экране.
+        //
+        // Цена ошибки несимметрична: не исправить слово вроде «Windows10» —
+        // мелкая неприятность; испортить невидимый пароль — нет.
+        //
+        // Известный предел: пароль из одних букв в смешанном регистре без цифр
+        // («MyPassWord») этим правилом не ловится. Расширять до «две буквы
+        // разных регистров» нельзя — под него попадут имена собственные вроде
+        // «McDonald», которые исправлять как раз нужно.
+        return hasUpper && hasOther
     }
 }
