@@ -7,6 +7,7 @@ let suites: [(String, [TestCase])] = [
     ("LayoutMapperTests", layoutMapperTests),
     ("TrigramModelTests", trigramModelTests),
     ("LayoutDetectorCalibrationTests", layoutDetectorCalibrationTests),
+    ("LanguagePriorTests", languagePriorTests),
 ]
 
 exit(runSuites(suites, filter: filter))

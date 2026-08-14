@@ -57,26 +57,21 @@ public struct DetectorThresholds: Sendable {
     ///                  +0.5 → FP 0.00%  FN 2.00%   ← wordBoundary, pause
     ///                  +1.2 → FP 0.00%  FN 10.00%  ← early (строже намеренно)
     ///
-    /// Для absoluteTarget маленький корпус задачи не даёт достаточно
-    /// отрицательных примеров (английских слов со знаком препинания на
-    /// конце), поэтому порог перемерен отдельно на популяциях 794
-    /// положительных (русские слова, чья английская форма содержит знаки
-    /// препинания) и 6000 отрицательных примеров:
+    ///   absoluteTarget -1.50 → FP 0.00%  FN 1.86%   ← 3765 положительных
+    ///                  -1.60 → FP 0.07%  FN 0.50%      и 3001 отрицательный
+    ///                  -1.70 → FP 0.23%  FN 0.21%
+    ///                  -1.80 → FP 0.40%  FN 0.08%
     ///
-    ///   порог    FP%    FN%
-    ///   -1.80    1.40   0.00
-    ///   -1.70    1.02   0.00
-    ///   -1.60    0.70   0.00   ← оптимум при FN=0
-    ///   -1.50    0.47   0.38
-    ///   -1.40    0.23   1.01
+    /// Замер сделан ПОСЛЕ обрезки границ слова в TrigramModel: до неё почти вся
+    /// отрицательная популяция сидела в этой ветке, а после — ушла в delta, где
+    /// обрабатывается надёжнее. Отрицательные здесь синтетические (знак препинания
+    /// вставлен ВНУТРЬ английского слова: "l.ittle", "w.here") — так почти никто
+    /// не печатает, поэтому фактический FP ещё ниже измеренного.
     ///
-    /// Классы перекрываются, идеального порога не существует: худшие
-    /// отрицательные примеры — реальные английские слова, чья форма в
-    /// другой раскладке тоже оказывается реальным русским словом ("bye."
-    /// → "иную" даёт -1.04, "here." → "рукую" даёт -1.06). Это тот же
-    /// принципиальный конфликт, что и на ветке delta, только для случая,
-    /// когда сравнивать не с чем. -1.6 выбран как точка нулевого FN с
-    /// минимальным FP среди таких точек.
+    /// Классы всё равно перекрываются, идеального порога не существует: часть
+    /// английских слов в другой раскладке даёт настоящие русские. Это та же
+    /// принципиальная неоднозначность, что и в delta-ветке; частично снимается
+    /// контекстом соседних слов (Task 6b).
     public static let calibrated = DetectorThresholds(
         wordBoundary: 0.5,
         pause: 0.5,
@@ -96,17 +91,20 @@ public final class LayoutDetector {
     private let models: [Layout: TrigramModel]
     private let mapper: LayoutMapper
     private let validator: WordValidating?
+    private let prior: LanguagePrior?
     private let thresholds: DetectorThresholds
 
     public init(
         models: [Layout: TrigramModel],
         mapper: LayoutMapper,
         validator: WordValidating?,
+        prior: LanguagePrior? = nil,
         thresholds: DetectorThresholds = .calibrated
     ) {
         self.models     = models
         self.mapper     = mapper
         self.validator  = validator
+        self.prior      = prior
         self.thresholds = thresholds
     }
 
@@ -132,13 +130,18 @@ public final class LayoutDetector {
         case .early:        threshold = thresholds.early
         }
 
+        // Контекст соседних слов сдвигает порог: там, где одно слово
+        // неразрешимо, язык предыдущих слов — единственный сигнал.
+        let effective = threshold - (prior?.bonus(forConverting: target) ?? 0)
+
         if let currentScore = models[currentLayout]?.meanLogProb(word, terminated: terminated) {
-            guard targetScore - currentScore > threshold else { return .keep }
+            guard targetScore - currentScore > effective else { return .keep }
         } else {
             // Модель текущего языка слово не оценивает — например, в нём есть
             // знаки препинания, стоящие в позициях букв другой раскладки.
             // Сравнивать не с чем, поэтому судим по абсолютной оценке цели.
-            guard targetScore > thresholds.absoluteTarget else { return .keep }
+            guard targetScore > thresholds.absoluteTarget - (prior?.bonus(forConverting: target) ?? 0)
+            else { return .keep }
         }
         return .convert(to: target, text: converted)
     }

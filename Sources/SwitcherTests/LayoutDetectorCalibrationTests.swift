@@ -218,6 +218,44 @@ func testPrintThresholdSweep() throws {
     }
 }
 
+/// Контекст решает там, где одно слово нерешаемо.
+/// «руки» набранное в английской раскладке даёт "hera": delta ≈ +0.25,
+/// ниже порога 0.5 — без контекста слово останется английским.
+/// После трёх русских слов эффективный порог падает до 0.0 и слово
+/// исправляется.
+func testContextResolvesAmbiguousWord() throws {
+    let models: [Layout: TrigramModel] = [.en: try TrigramModel.bundled(.en),
+                                          .ru: try TrigramModel.bundled(.ru)]
+    let (_, mapper) = try makeFixture()
+    let typed = try XCTUnwrap(mapper.transpose("руки", from: .ru, to: .en))
+
+    let without = LayoutDetector(models: models, mapper: mapper, validator: nil)
+    XCTAssertEqual(without.evaluate(word: typed, currentLayout: .en, trigger: .wordBoundary),
+                   .keep, "Без контекста слово на грани оставляем как есть")
+
+    let prior = LanguagePrior(capacity: 3, weight: 0.5)
+    for _ in 0..<3 { prior.record(.ru) }
+    let with = LayoutDetector(models: models, mapper: mapper, validator: nil, prior: prior)
+    XCTAssertEqual(with.evaluate(word: typed, currentLayout: .en, trigger: .wordBoundary),
+                   .convert(to: .ru, text: "руки"),
+                   "Русский контекст должен склонять решение в пользу русского")
+}
+
+/// Контекст не должен ломать смешанный текст: частотное английское слово
+/// остаётся английским даже посреди русского.
+func testContextDoesNotBreakCommonEnglishWordInRussianText() throws {
+    let models: [Layout: TrigramModel] = [.en: try TrigramModel.bundled(.en),
+                                          .ru: try TrigramModel.bundled(.ru)]
+    let (_, mapper) = try makeFixture()
+    let prior = LanguagePrior(capacity: 3, weight: 0.5)
+    for _ in 0..<3 { prior.record(.ru) }
+    let detector = LayoutDetector(models: models, mapper: mapper, validator: nil, prior: prior)
+    for word in ["here", "the", "code", "file", "test"] {
+        XCTAssertEqual(detector.evaluate(word: word, currentLayout: .en, trigger: .wordBoundary),
+                       .keep, "«\(word)» — частотное английское слово, контекст его не перебивает")
+    }
+}
+
 let layoutDetectorCalibrationTests: [TestCase] = [
     TestCase("testNoFalsePositivesOnCorrectlyTypedWords", testNoFalsePositivesOnCorrectlyTypedWords),
     TestCase("testCatchesWrongLayoutWords", testCatchesWrongLayoutWords),
@@ -227,5 +265,7 @@ let layoutDetectorCalibrationTests: [TestCase] = [
     TestCase("testDoesNotTouchEnglishWordsWithTrailingPunctuation", testDoesNotTouchEnglishWordsWithTrailingPunctuation),
     TestCase("testEarlyTriggerRejectsShortPrefixes", testEarlyTriggerRejectsShortPrefixes),
     TestCase("testWordValidInCurrentLanguageIsNeverConverted", testWordValidInCurrentLanguageIsNeverConverted),
-    TestCase("testPrintThresholdSweep", testPrintThresholdSweep)
+    TestCase("testPrintThresholdSweep", testPrintThresholdSweep),
+    TestCase("testContextResolvesAmbiguousWord", testContextResolvesAmbiguousWord),
+    TestCase("testContextDoesNotBreakCommonEnglishWordInRussianText", testContextDoesNotBreakCommonEnglishWordInRussianText)
 ]
