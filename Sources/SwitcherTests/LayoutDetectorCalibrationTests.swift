@@ -108,11 +108,27 @@ func testCatchesWordsWithPunctuationPositionedLetters() throws {
     for word in ["любовь", "объезд", "жизнь", "съезд", "подъезд"] {
         let typed = try XCTUnwrap(mapper.transpose(word, from: .ru, to: .en),
                                   "\(word): транспонирование должно работать")
-        try XCTAssertNil(TrigramModel.bundled(.en).meanLogProb(typed, terminated: true),
-                     "\(typed): английская модель такое слово оценить не может")
+        // Проверяем ПОВЕДЕНИЕ, а не то, какой веткой детектор к нему пришёл.
+        // У «жизнь» → ";bpym" буква на клавише препинания стоит на границе
+        // слова, обрезка её убирает, и решение принимается по delta, а не по
+        // absoluteTarget. Ответ от этого не меняется, и привязываться к
+        // механизму здесь нельзя.
         XCTAssertEqual(detector.evaluate(word: typed, currentLayout: .en, trigger: .wordBoundary),
                        .convert(to: .ru, text: word),
                        "\(typed) должно исправляться в «\(word)»")
+    }
+}
+
+/// Отдельная проверка самой ветки absoluteTarget: слово, где символы вне
+/// алфавита стоят ВНУТРИ, обрезкой границ не спасается и оценке английской
+/// моделью не поддаётся — значит решение принимается по абсолютной оценке цели.
+func testInternalPunctuationKeepsWordUnscorableInSourceLanguage() throws {
+    let (_, mapper) = try makeFixture()
+    let en = try TrigramModel.bundled(.en)
+    for word in ["любовь", "объезд", "съезд", "подъезд"] {
+        let typed = try XCTUnwrap(mapper.transpose(word, from: .ru, to: .en))
+        XCTAssertNil(en.meanLogProb(typed, terminated: true),
+                     "\(typed): внутренняя пунктуация делает слово неоцениваемым")
     }
 }
 
@@ -207,6 +223,7 @@ let layoutDetectorCalibrationTests: [TestCase] = [
     TestCase("testCatchesWrongLayoutWords", testCatchesWrongLayoutWords),
     TestCase("testEarlyTriggerIsStricterThanWordBoundary", testEarlyTriggerIsStricterThanWordBoundary),
     TestCase("testCatchesWordsWithPunctuationPositionedLetters", testCatchesWordsWithPunctuationPositionedLetters),
+    TestCase("testInternalPunctuationKeepsWordUnscorableInSourceLanguage", testInternalPunctuationKeepsWordUnscorableInSourceLanguage),
     TestCase("testDoesNotTouchEnglishWordsWithTrailingPunctuation", testDoesNotTouchEnglishWordsWithTrailingPunctuation),
     TestCase("testEarlyTriggerRejectsShortPrefixes", testEarlyTriggerRejectsShortPrefixes),
     TestCase("testWordValidInCurrentLanguageIsNeverConverted", testWordValidInCurrentLanguageIsNeverConverted),
