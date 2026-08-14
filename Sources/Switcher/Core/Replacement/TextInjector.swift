@@ -165,7 +165,15 @@ public final class TextInjector {
 
     // MARK: - Стратегия B: переигрывание keycode'ов
 
-    private func replaceViaKeycodeReplay(_ request: ReplacementRequest) -> Bool {
+    func replaceViaKeycodeReplay(_ request: ReplacementRequest) -> Bool {
+        // Без нажатий переигрывать нечем. Ниже сначала идёт sendBackspaces —
+        // без этой проверки исходный текст удалился бы, а взамен не
+        // напечаталось бы ничего: слово пропадает у пользователя без следа
+        // и без сообщения об ошибке (см. ревью Task 12, находка 2). Отказ
+        // здесь — страховка на уровне самого инжектора, а не только на
+        // уровне вызывающего кода, который обязан передавать strokes.
+        guard !request.strokes.isEmpty else { return false }
+
         // Проверяем состояние, если AX доступен хотя бы на чтение.
         if let element = ax.focusedElement() {
             guard !ax.isSecure(element) else { return false }

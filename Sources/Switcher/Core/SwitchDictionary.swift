@@ -5,6 +5,11 @@ import Foundation
 public struct LastSwitchInfo {
     let originalWord:  String   // what user actually typed ("ghbdtn")
     public let replacedWith:  String   // what we replaced it with ("привет")
+    /// Физические нажатия исходного слова — нужны, чтобы отмена могла
+    /// переиграть их стратегией .keycodeReplay, а не полагаться на пустой
+    /// массив (см. ревью Task 12, находка 2: пустые strokes на этой
+    /// стратегии удаляют текст и не печатают его обратно).
+    let strokes:       [KeyStroke]
     let fromLanguage:  String   // layout that was active when user typed
     let toLanguage:    String   // layout we switched to
     let timestamp:     Date

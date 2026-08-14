@@ -62,6 +62,25 @@ func testFailureDemotesCachedStrategy() throws {
                  "Отвалившаяся стратегия должна забываться, а не залипать навсегда")
 }
 
+/// Ревью Task 12, находка 2: если strokes пуст, а заменять есть чем,
+/// replaceViaKeycodeReplay обязан отказать ДО backspace'ов — иначе исходный
+/// текст удаляется, а взамен не печатается ничего, и слово пропадает
+/// бесследно. Проверяем это без живого приложения: раз отказ должен
+/// происходить раньше любых системных вызовов (AX/CGEvent), для теста
+/// достаточно убедиться, что вызов не запостил вообще ничего пользователю
+/// в текстовое поле — тут это гарантируется тем, что метод возвращает
+/// false, даже когда AX ничего не видит (пустой ax.focusedElement()) и
+/// синхронный переключатель раскладки завершается мгновенно.
+func testKeycodeReplayRefusesEmptyStrokes() throws {
+    let injector = TextInjector(ax: AXTextClient(), onSwitchLayout: { _, done in done() })
+    let req = ReplacementRequest(
+        strokes: [], original: "привет", replacement: "ghbdtn",
+        tail: "", targetLayout: .en, bundleID: "com.example.app"
+    )
+    XCTAssertFalse(injector.replaceViaKeycodeReplay(req),
+                   "Пустые strokes — сигнал отказать до удаления текста, а не после")
+}
+
 let textInjectorTests: [TestCase] = [
     TestCase("testRangeCoversWordPlusTail", testRangeCoversWordPlusTail),
     TestCase("testRangeWithoutTail", testRangeWithoutTail),
@@ -69,5 +88,6 @@ let textInjectorTests: [TestCase] = [
     TestCase("testRangeUsesUTF16Length", testRangeUsesUTF16Length),
     TestCase("testStrategyOrderPrefersAXDirect", testStrategyOrderPrefersAXDirect),
     TestCase("testCacheStartsEmptyAndRecordsSuccess", testCacheStartsEmptyAndRecordsSuccess),
-    TestCase("testFailureDemotesCachedStrategy", testFailureDemotesCachedStrategy)
+    TestCase("testFailureDemotesCachedStrategy", testFailureDemotesCachedStrategy),
+    TestCase("testKeycodeReplayRefusesEmptyStrokes", testKeycodeReplayRefusesEmptyStrokes)
 ]

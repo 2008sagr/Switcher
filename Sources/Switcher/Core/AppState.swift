@@ -183,6 +183,13 @@ public class AppState: ObservableObject {
             }
         }
 
+        // Диагностика неудачной замены/отмены (ревью Task 12, находка 4):
+        // отдельного UI для ошибок пока нет, но лог — минимум, который не
+        // даёт пропаже текста пройти незамеченной.
+        engine.onReplacementFailed = { word in
+            print("[Switcher] Замена не удалась: «\(word)»")
+        }
+
         engine.onUndone = { [weak self] info in
             DispatchQueue.main.async {
                 self?.lastSwitch = nil
