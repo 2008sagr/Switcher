@@ -230,7 +230,7 @@ func testPrintThresholdSweep() throws {
 }
 
 /// Контекст решает там, где одно слово нерешаемо.
-/// «руки» набранное в английской раскладке даёт "hera": delta ≈ +0.25,
+/// «руки» набранное в английской раскладке даёт "herb": delta ≈ +0.25,
 /// ниже порога 0.5 — без контекста слово останется английским.
 /// После трёх русских слов эффективный порог падает до 0.0 и слово
 /// исправляется.
@@ -254,6 +254,13 @@ func testContextResolvesAmbiguousWord() throws {
 
 /// Контекст не должен ломать смешанный текст: частотное английское слово
 /// остаётся английским даже посреди русского.
+///
+/// «if» добавлено отдельно от остальных: его delta ≈ −0.41 (замерено sweep'ом
+/// по корпусу задачи) — ближе к сдвинутому порогу 0.0, чем у любого другого
+/// слова набора («here» ≈ −0.44, у остальных четырёх от −1.19 до −2.01). Без
+/// него тест не заметил бы, например, ошибочно завышенный вес приоритета:
+/// слова с запасом в единицы log10-правдоподобия останутся «keep» почти при
+/// любом разумном сдвиге порога, а «if» — нет.
 func testContextDoesNotBreakCommonEnglishWordInRussianText() throws {
     let models: [Layout: TrigramModel] = [.en: try TrigramModel.bundled(.en),
                                           .ru: try TrigramModel.bundled(.ru)]
@@ -261,10 +268,42 @@ func testContextDoesNotBreakCommonEnglishWordInRussianText() throws {
     let prior = LanguagePrior(capacity: 3, weight: 0.5)
     for _ in 0..<3 { prior.record(.ru) }
     let detector = LayoutDetector(models: models, mapper: mapper, validator: nil, prior: prior)
-    for word in ["here", "the", "code", "file", "test"] {
+    for word in ["here", "the", "code", "file", "test", "if"] {
         XCTAssertEqual(detector.evaluate(word: word, currentLayout: .en, trigger: .wordBoundary),
                        .keep, "«\(word)» — частотное английское слово, контекст его не перебивает")
     }
+}
+
+/// Приоритет обязан применяться и в ветке absoluteTarget, а не только в
+/// ветке delta — через absoluteTarget идут все русские слова с буквами
+/// б, ю, ж, э, х, ъ, ё (по замерам — 15% реального потока), и regression,
+/// убирающий вычитание bonus именно в этой строке, testContextResolvesAmbiguousWord
+/// не поймает: там слово «руки» вообще не задевает эту ветку.
+///
+/// «заём» набранное в английской раскладке даёт "pf§v": «ё» стоит внутри
+/// слова, поэтому английская модель его не оценивает (delta == nil), и
+/// решение принимается по абсолютной оценке цели — targetScore ≈ −1.96.
+/// Без контекста порог −1.6, −1.96 его не превышает → keep. Полный русский
+/// контекст сдвигает порог до −1.6 − 0.5 = −2.1, а −1.96 > −2.1 → convert.
+/// Найдено sweep'ом по расширенному списку слов с внутренними
+/// б/ю/ж/э/х/ъ/ё (подробности подбора — в task-6b-report.md,
+/// «Фикс-раунд 1»).
+func testContextAppliesToAbsoluteTargetBranch() throws {
+    let models: [Layout: TrigramModel] = [.en: try TrigramModel.bundled(.en),
+                                          .ru: try TrigramModel.bundled(.ru)]
+    let (_, mapper) = try makeFixture()
+    let typed = try XCTUnwrap(mapper.transpose("заём", from: .ru, to: .en))
+
+    let without = LayoutDetector(models: models, mapper: mapper, validator: nil)
+    XCTAssertEqual(without.evaluate(word: typed, currentLayout: .en, trigger: .wordBoundary),
+                   .keep, "Без контекста слово в ветке absoluteTarget остаётся как есть")
+
+    let prior = LanguagePrior(capacity: 3, weight: 0.5)
+    for _ in 0..<3 { prior.record(.ru) }
+    let with = LayoutDetector(models: models, mapper: mapper, validator: nil, prior: prior)
+    XCTAssertEqual(with.evaluate(word: typed, currentLayout: .en, trigger: .wordBoundary),
+                   .convert(to: .ru, text: "заём"),
+                   "Русский контекст должен сдвигать и абсолютный порог тоже")
 }
 
 let layoutDetectorCalibrationTests: [TestCase] = [
@@ -278,5 +317,6 @@ let layoutDetectorCalibrationTests: [TestCase] = [
     TestCase("testWordValidInCurrentLanguageIsNeverConverted", testWordValidInCurrentLanguageIsNeverConverted),
     TestCase("testPrintThresholdSweep", testPrintThresholdSweep),
     TestCase("testContextResolvesAmbiguousWord", testContextResolvesAmbiguousWord),
-    TestCase("testContextDoesNotBreakCommonEnglishWordInRussianText", testContextDoesNotBreakCommonEnglishWordInRussianText)
+    TestCase("testContextDoesNotBreakCommonEnglishWordInRussianText", testContextDoesNotBreakCommonEnglishWordInRussianText),
+    TestCase("testContextAppliesToAbsoluteTargetBranch", testContextAppliesToAbsoluteTargetBranch)
 ]
