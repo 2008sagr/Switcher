@@ -152,6 +152,16 @@ public final class EventTapController {
 
         guard didEnable else {
             print("[Switcher] Контроллер освобождён во время старта — тап не включён")
+            // Без этого isRunning (tap != nil) соврал бы: тап уже создан и
+            // назначен полям выше, хотя реально не включился и поток уже
+            // вышел из воркера, не дойдя до CFRunLoopRun(). Повторный start()
+            // после такого false вышел бы по guard !isRunning и вернул true,
+            // не создав рабочий тап — обнуляем поля, чтобы isRunning остался
+            // честным индикатором и повторный старт был возможен.
+            tap = nil
+            runLoopSource = nil
+            threadRunLoop = nil
+            thread = nil
             return false
         }
 

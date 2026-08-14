@@ -10,7 +10,13 @@ public class AppState: ObservableObject {
     @Published public var isEnabled: Bool {
         didSet {
             UserDefaults.standard.set(isEnabled, forKey: "isEnabled")
-            isEnabled ? engine.start() : engine.stop()
+            // Тернарный оператор здесь больше не подходит: start() теперь
+            // возвращает Bool (честный результат запуска тапа), а stop() — Void.
+            if isEnabled {
+                engine.start()
+            } else {
+                engine.stop()
+            }
         }
     }
 
@@ -25,13 +31,6 @@ public class AppState: ObservableObject {
         didSet {
             UserDefaults.standard.set(doubleShiftEnabled, forKey: "doubleShiftEnabled")
             engine.doubleShiftEnabled = doubleShiftEnabled
-        }
-    }
-
-    @Published public var spellCheckEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(spellCheckEnabled, forKey: "spellCheckEnabled")
-            engine.spellCheckEnabled = spellCheckEnabled
         }
     }
 
@@ -135,8 +134,7 @@ public class AppState: ObservableObject {
 
     // MARK: - Engine
 
-    // KeyboardEngine временно отключён (Task 3, до Task 11) — используется заглушка.
-    public let engine: KeyboardEngineStub
+    public let engine: SwitchCoordinator
     private var layoutObserver: NSObjectProtocol?
 
     public init() {
@@ -144,16 +142,14 @@ public class AppState: ObservableObject {
         isEnabled            = UserDefaults.standard.object(forKey: "isEnabled")           as? Bool ?? true
         autoSwitchEnabled    = UserDefaults.standard.object(forKey: "autoSwitchEnabled")   as? Bool ?? true
         doubleShiftEnabled   = UserDefaults.standard.object(forKey: "doubleShiftEnabled")  as? Bool ?? true
-        spellCheckEnabled    = UserDefaults.standard.object(forKey: "spellCheckEnabled")   as? Bool ?? true
         minWordLength        = UserDefaults.standard.object(forKey: "minWordLength")       as? Int  ?? 4
         learningEnabled      = UserDefaults.standard.object(forKey: "learningEnabled")     as? Bool ?? true
         launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
         dictionary           = savedDict
 
-        engine = KeyboardEngineStub()
+        engine = SwitchCoordinator()
         engine.autoSwitchEnabled  = autoSwitchEnabled
         engine.doubleShiftEnabled = doubleShiftEnabled
-        engine.spellCheckEnabled  = spellCheckEnabled
         engine.minWordLength      = minWordLength
         engine.learningEnabled    = learningEnabled
         engine.exclusions         = savedDict.exceptionsSet

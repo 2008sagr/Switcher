@@ -85,9 +85,6 @@ struct DetectionTab: View {
     var body: some View {
         Form {
             Section("Распознавание слов") {
-                Toggle("Проверять орфографию", isOn: $appState.spellCheckEnabled)
-                    .help("Использует встроенную проверку орфографии macOS. Если словарь языка недоступен, применяется частотный анализ n-грамм.")
-
                 HStack {
                     Text("Минимальная длина слова")
                     Spacer()
