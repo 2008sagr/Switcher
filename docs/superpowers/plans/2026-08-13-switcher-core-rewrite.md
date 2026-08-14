@@ -884,6 +884,35 @@ final class TrigramModelTests: XCTestCase {
     func testRejectsBadMagic() {
         XCTAssertThrowsError(try TrigramModel(data: Data("XXXX".utf8)))
     }
+
+    /// Заголовок с огромным размером алфавита обязан дать ошибку, а не уронить
+    /// процесс: size*size*size переполняет Int раньше проверки на усечённость.
+    func testRejectsOversizedAlphabetWithoutCrashing() {
+        var data = Data("STG2".utf8)
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(0xC000_0000).littleEndian) { Array($0) })
+        data.append(Data(repeating: 0, count: 64))
+        XCTAssertThrowsError(try TrigramModel(data: data))
+    }
+
+    /// Верная магия и правдоподобный алфавит, но данных после заголовка не хватает.
+    func testRejectsTruncatedData() {
+        var data = Data("STG2".utf8)
+        data.append(contentsOf: withUnsafeBytes(of: UInt32(28).littleEndian) { Array($0) })
+        data.append(Data(repeating: 0, count: 28 * 4))   // алфавит есть, таблицы нет
+        XCTAssertThrowsError(try TrigramModel(data: data))
+    }
+
+    /// Знак препинания на конце не должен мешать оценке: без обрезки границ
+    /// английские слова со знаком препинания не оценивались вовсе.
+    func testTrimsBoundaryPunctuation() throws {
+        let en = try TrigramModel.bundled(.en)
+        let plain = try XCTUnwrap(en.meanLogProb("hello", terminated: true))
+        let dotted = try XCTUnwrap(en.meanLogProb("hello.", terminated: true))
+        XCTAssertEqual(plain, dotted, accuracy: 0.0001)
+        // Внутренние символы вне алфавита по-прежнему делают слово неоцениваемым:
+        // на этом держится ветка absoluteTarget.
+        XCTAssertNil(en.meanLogProb("k.,jdm", terminated: true))
+    }
 }
 ```
 
@@ -923,6 +952,10 @@ public final class TrigramModel {
         }
 
         let size = Int(data.withUnsafeBytes { $0.loadUnaligned(fromByteOffset: 4, as: UInt32.self) })
+        // Верхняя граница обязательна: size приходит из файла без проверок, а
+        // size*size*size переполняет Int раньше, чем сработает guard ниже, и
+        // процесс падает по trap вместо честной ошибки. Реальные алфавиты — 28 и 34.
+        guard size >= 2, size <= 256 else { throw TrigramModelError.truncated }
         let alphabetBytes = size * 4
         let probsCount    = size * size * size
         guard data.count == 8 + alphabetBytes + probsCount * 4 else {
@@ -964,10 +997,20 @@ public final class TrigramModel {
     ///
     /// - Parameter terminated: `true` — слово дописано (`^^слово^`),
     ///   `false` — оценивается префикс (`^^сло`), концевой маркер не добавляется.
-    /// - Returns: `nil`, если слово короче двух символов или содержит символы
-    ///   вне алфавита модели — такое слово этой модели не принадлежит.
+    /// Ведущие и хвостовые символы вне алфавита отбрасываются перед оценкой:
+    /// «hello.» оценивается как «hello». Без этого английские слова со знаком
+    /// препинания вообще не оценивались, и слово, набранное в русской раскладке
+    /// («руддщю»), не исправлялось — модель возвращала nil на кандидате «hello.»,
+    /// и решение выходило на первом же guard. Внутренние символы вне алфавита
+    /// НЕ отбрасываются: именно они отличают «k.,jdm» («любовь») от обычного
+    /// слова и уводят решение в ветку absoluteTarget.
+    ///
+    /// - Returns: `nil`, если после обрезки осталось меньше двух символов или
+    ///   внутри остались символы вне алфавита.
     public func meanLogProb(_ word: String, terminated: Bool) -> Double? {
-        let lower = word.lowercased()
+        var lower = Substring(word.lowercased())
+        while let first = lower.first, indexOf[first] == nil { lower = lower.dropFirst() }
+        while let last = lower.last, indexOf[last] == nil { lower = lower.dropLast() }
         guard lower.count >= 2 else { return nil }
 
         var ids = [Self.boundaryIndex, Self.boundaryIndex]
