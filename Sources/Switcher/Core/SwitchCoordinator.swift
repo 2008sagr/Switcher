@@ -33,9 +33,15 @@ import Foundation
 ///   main queue   — только колбэки в UI и системные уведомления
 ///                  (NSWorkspace, DistributedNotificationCenter).
 ///
-/// `LanguagePrior`, `SystemWordValidator` и кэш стратегий в `TextInjector`
-/// синхронизированы сами (свой `NSLock`), поэтому в это разделение не
-/// включены — их можно звать с любой из очередей.
+/// `LanguagePrior`, `SystemWordValidator`, кэш стратегий в `TextInjector` и
+/// `CurrentLayoutCache` синхронизированы сами (свой `NSLock`), поэтому в это
+/// разделение не включены — их можно звать с любой из очередей.
+///
+/// Отдельное правило поверх всего этого: `InputSourceManager` (TIS/HIToolbox)
+/// можно звать ТОЛЬКО с main — см. его заголовок. Поэтому `evaluate()` на
+/// `work` не читает раскладку через `sources` напрямую, а читает
+/// `layoutCache` (снимок, обновляемый на main), а `switchLayout()`
+/// заворачивает сам вызов TIS в `DispatchQueue.main.async`.
 public final class SwitchCoordinator: EventTapDelegate {
 
     // MARK: - Настройки
@@ -102,6 +108,10 @@ public final class SwitchCoordinator: EventTapDelegate {
     private let sources = InputSourceManager()
     /// Собственный NSLock внутри — вызывать можно с любой очереди.
     private let prior = LanguagePrior()
+    /// Снимок текущей раскладки для очередей, которым нельзя звать TIS
+    /// напрямую (см. заголовок класса и заголовок CurrentLayoutCache).
+    /// Собственный NSLock внутри — вызывать можно с любой очереди.
+    private let layoutCache = CurrentLayoutCache()
 
     /// Единственный владелец буфера и всех полей, разделяемых между тапом,
     /// колбэками настроек (main) и обработкой двойного Shift. Строгая
@@ -134,9 +144,20 @@ public final class SwitchCoordinator: EventTapDelegate {
     /// зовутся с main (AppState, кнопка «Перезапустить» в UI) — отдельной
     /// защиты не заводил, но это допущение, а не гарантия типов.
     private var appObserver: NSObjectProtocol?
+    /// Держит layoutCache в актуальном состоянии — см. start(). Мутируется
+    /// по тому же допущению, что и appObserver.
+    private var inputSourceObserver: NSObjectProtocol?
 
     private let doubleShiftInterval: TimeInterval = 0.4
     private let pauseInterval: TimeInterval = 0.5
+
+    /// Системное уведомление о смене раскладки — приходит и на переключения
+    /// пользователем, и на наши собственные (TISSelectInputSource рассылает
+    /// то же самое). Используется дважды: здесь, чтобы держать layoutCache
+    /// актуальным, и в switchLayout(), чтобы дождаться подтверждения смены —
+    /// одна константа, чтобы имя не разъехалось между двумя подписками.
+    private static let layoutChangedNotification =
+        NSNotification.Name("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged")
 
     public init() {
         injector = TextInjector(ax: ax) { [weak self] layout, done in
@@ -152,6 +173,22 @@ public final class SwitchCoordinator: EventTapDelegate {
     public func start() -> Bool {
         let bundleID = NSWorkspace.shared.frontmostApplication?.bundleIdentifier ?? ""
         state.async { [weak self] in self?.stateCurrentBundleID = bundleID }
+
+        // start() зовётся с main (см. комментарий у appObserver) — прямой
+        // вызов sources.currentLanguage() здесь безопасен и даёт кэшу
+        // стартовое значение, ещё до первого уведомления от системы.
+        layoutCache.update(sources.currentLanguage())
+        inputSourceObserver = DistributedNotificationCenter.default().addObserver(
+            forName: Self.layoutChangedNotification, object: nil, queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            // Уведомление приходит и на переключения раскладки самим
+            // пользователем, и на наши собственные (apply()/finishUndo() →
+            // switchLayout() → TISSelectInputSource рассылает то же самое
+            // уведомление) — отдельно обновлять кэш после своих переключений
+            // не нужно, этой подписки достаточно на оба случая.
+            self.layoutCache.update(self.sources.currentLanguage())
+        }
 
         appObserver = NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification, object: nil, queue: .main
@@ -177,14 +214,25 @@ public final class SwitchCoordinator: EventTapDelegate {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             appObserver = nil
         }
+        if let observer = inputSourceObserver {
+            DistributedNotificationCenter.default().removeObserver(observer)
+            inputSourceObserver = nil
+        }
     }
 
     public var isRunning: Bool { tap.isRunning }
 
+    /// Публичный API для AppState — там всегда вызывается с main (UI-индикатор
+    /// раскладки), так что прямой поход в TIS здесь безопасен и даёт самый
+    /// свежий ответ. currentLayout() ниже — для work, у него другая история.
     public func currentLanguage() -> String { sources.currentLanguage() }
 
+    /// Выполняется на `work` (единственный вызывающий — evaluate()). TIS
+    /// звать отсюда напрямую нельзя (см. заголовок InputSourceManager) —
+    /// поэтому читаем layoutCache, самосинхронизированный снимок,
+    /// поддерживаемый актуальным подпиской из start() на main.
     private func currentLayout() -> Layout {
-        Layout(languageCode: sources.currentLanguage()) ?? .en
+        Layout(languageCode: layoutCache.read()) ?? .en
     }
 
     /// Выполняется на `state`.
@@ -192,7 +240,15 @@ public final class SwitchCoordinator: EventTapDelegate {
         stateGuards = GuardRules(wordExclusions: exclusions, excludedApps: excludedApps)
     }
 
+    /// Зовётся только из init() — а SwitchCoordinator всегда создаётся как
+    /// @StateObject-зависимость AppState, то есть на main. dispatchPrecondition
+    /// здесь — не проверка текущего вызова (он и так на main), а страховка на
+    /// будущее: если когда-нибудь это станет зваться повторно (например, при
+    /// "обновить список раскладок" в UI) не с main, TISGetInputSourceProperty
+    /// ниже упадёт так же, как остальные TIS-вызовы, — пусть лучше упадёт
+    /// здесь явно.
     private func rebuildLayoutTables() {
+        dispatchPrecondition(condition: .onQueue(.main))
         var tables: [Layout: KeyboardLayoutTable] = [:]
         for source in sources.selectableSources() {
             guard let code = sources.language(for: source),
@@ -382,8 +438,20 @@ public final class SwitchCoordinator: EventTapDelegate {
 
     /// Меняет раскладку и дожидается подтверждения системным уведомлением,
     /// а не фиксированной задержкой.
+    ///
+    /// Вызывается с `work` (из apply()/finishUndo()) и, через onSwitchLayout,
+    /// из replaceViaKeycodeReplay — тоже на `work`, которая там же ждёт
+    /// completion() через семафор с таймаутом 1с. TISSelectInputSource нельзя
+    /// звать не с main (см. заголовок InputSourceManager), поэтому сам вызов
+    /// заворачивается в DispatchQueue.main.async — сам switchLayout() при
+    /// этом синхронным не становится и возвращается сразу же, как и раньше;
+    /// ждёт после него только тот, кто сам решил ждать (семафор в
+    /// replaceViaKeycodeReplay). Дедлока нет: наблюдатель уведомления и
+    /// страховочный таймер ниже уже были на `queue: .main`/main.asyncAfter
+    /// ДО этого изменения — сигнал (completion() → switched.signal())
+    /// приходит с main, а ждёт семафор поток `work`, а не main, так что
+    /// главный поток никогда не блокируется ожиданием самого себя.
     private func switchLayout(to layout: Layout, completion: @escaping () -> Void) {
-        let name = NSNotification.Name("com.apple.Carbon.TISNotifySelectedKeyboardInputSourceChanged")
         var observer: NSObjectProtocol?
         var finished = false
         let finish = {
@@ -393,10 +461,15 @@ public final class SwitchCoordinator: EventTapDelegate {
             completion()
         }
         observer = DistributedNotificationCenter.default().addObserver(
-            forName: name, object: nil, queue: .main
+            forName: Self.layoutChangedNotification, object: nil, queue: .main
         ) { _ in finish() }
 
-        sources.switchToLanguage(layout.rawValue)
+        // Регистрация наблюдателя выше — синхронная и не зависит от очереди,
+        // так что она гарантированно готова ДО того, как переключение вообще
+        // начнётся, даже с учётом того, что сам вызов TIS теперь асинхронный.
+        DispatchQueue.main.async { [weak self] in
+            self?.sources.switchToLanguage(layout.rawValue)
+        }
 
         // Страховка на случай, если уведомление не придёт (раскладка уже активна).
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { finish() }
