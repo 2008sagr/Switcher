@@ -163,23 +163,6 @@ public class AppState: ObservableObject {
                 self.switchCount      += 1
                 self.lastSwitchedWord = info.originalWord
                 self.lastSwitch       = info
-
-                // Learn from double-shift: split selection into words, add each as correction rule
-                if info.isDoubleShift && self.learningEnabled {
-                    let origWords = info.originalWord
-                        .components(separatedBy: .whitespacesAndNewlines)
-                        .map { $0.trimmingCharacters(in: .punctuationCharacters) }
-                        .filter { !$0.isEmpty }
-                    let convWords = info.replacedWith
-                        .components(separatedBy: .whitespacesAndNewlines)
-                        .map { $0.trimmingCharacters(in: .punctuationCharacters) }
-                        .filter { !$0.isEmpty }
-                    if origWords.count == convWords.count {
-                        for (orig, conv) in zip(origWords, convWords) {
-                            self.addCorrection(from: orig, to: conv)
-                        }
-                    }
-                }
             }
         }
 

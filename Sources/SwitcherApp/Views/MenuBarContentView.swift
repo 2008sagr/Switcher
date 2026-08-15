@@ -101,7 +101,7 @@ struct MenuBarContentView: View {
                         }
                         .buttonStyle(.bordered)
                         .controlSize(.mini)
-                        .help("Отменить замену (двойной Shift без выделения)")
+                        .help("Отменить замену (двойной Shift)")
                     } else {
                         // "Add to exceptions" button
                         if !appState.exclusions.contains(appState.lastSwitchedWord.lowercased()) {

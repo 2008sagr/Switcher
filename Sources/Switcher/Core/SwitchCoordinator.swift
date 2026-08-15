@@ -372,7 +372,7 @@ public final class SwitchCoordinator: EventTapDelegate {
         let info = LastSwitchInfo(
             originalWord: word.text, replacedWith: replacement, strokes: word.strokes,
             fromLanguage: target.opposite.rawValue, toLanguage: target.rawValue,
-            timestamp: Date(), isCorrection: isCorrection, isDoubleShift: false
+            timestamp: Date(), isCorrection: isCorrection
         )
         // stateLastSwitch принадлежит state — мутируем его только там.
         // buffer сюда больше не входит: сброшен синхронно выше, до replace().

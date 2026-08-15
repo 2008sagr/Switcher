@@ -14,7 +14,6 @@ public struct LastSwitchInfo {
     let toLanguage:    String   // layout we switched to
     let timestamp:     Date
     let isCorrection:  Bool     // true = typo correction, false = layout switch
-    let isDoubleShift: Bool     // true = triggered by double-shift on selected text
 
     /// Undo is only available for a short window after the switch.
     var isUndoable: Bool {
