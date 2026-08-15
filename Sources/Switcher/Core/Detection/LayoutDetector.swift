@@ -1,13 +1,43 @@
 import Foundation
 
 /// Что заставило детектор проснуться.
+///
+/// Единственный повод — `wordBoundary`. Раньше были ещё `early` (оценка на
+/// каждый символ) и `pause` (оценка после паузы в наборе) — оба убраны
+/// намеренно, а не по недосмотру, и обратно их включать нельзя не подумав.
+///
+/// Причина: префикс русского слова статистически неотличим от целого
+/// русского слова — это не вопрос калибровки порога, а свойство самой
+/// триграммной модели. Замер (детектор на реальном коде, не гипотеза):
+///
+///   ghjdthrf → «проверка»
+///        ghjd    (4 симв.) pause  → «пров»
+///        ghjdt   (5 симв.) early  → «прове»   ← уверенно конвертируется
+///        ghjdth  (6 симв.) early  → «провер»
+///   ghbdtn → «привет»
+///        ghbd    (4 симв.) pause  → «прив»
+///        ghbdt   (5 симв.) early  → «приве»   ← уверенно конвертируется
+///   dctulf → «всегда»
+///        dctul   (5 симв.) early  → «всегд»   ← уверенно конвертируется
+///
+/// «прове» выглядит для модели ровно так же правдоподобно, как «слово» —
+/// оба целые с точки зрения триграмм. Пользователь печатает `ghjdt` (ещё не
+/// дописал «проверка»), ранний триггер конвертирует префикс в «прове» и
+/// переключает раскладку, а остаток «hrf» падает уже в русскую — каша.
+/// Короткие слова (например «rfr», 3 символа) этой беды избегали случайно:
+/// они короче minWordLength (4) и до раннего/паузного триггера просто не
+/// добирались — отсюда симптом «понимает rfr, но не понимает ghjdthrf».
+///
+/// Калибровка порогов (`DetectorThresholds.calibrated`) делалась на ЦЕЛЫХ
+/// словах и была слепа к этому сценарию: подобрать порог, отличающий
+/// недописанный префикс от целого слова, нельзя в принципе — статистика
+/// префикса и статистика слова с этой длиной неразличимы. Единственная
+/// рабочая защита — не оценивать префиксы вообще, то есть конвертировать
+/// только на границе слова.
 public enum Trigger: Sendable {
-    /// Пользователь нажал пробел или знак препинания — слово дописано.
+    /// Пользователь нажал пробел, Enter или иной завершающий слово символ —
+    /// слово дописано. Единственный повод для оценки, см. комментарий выше.
     case wordBoundary
-    /// Пауза в наборе: слово, скорее всего, дописано, но подтверждения нет.
-    case pause
-    /// Каждый символ: оценивается недописанный префикс.
-    case early
 }
 
 public enum Verdict: Equatable, Sendable {
@@ -28,9 +58,6 @@ public protocol WordValidating: AnyObject {
 /// пересобрал модель — перезапусти sweep и подставь новую точку.
 public struct DetectorThresholds: Sendable {
     public var wordBoundary: Double
-    public var pause: Double
-    public var early: Double
-    public var earlyMinLength: Int
     /// Порог для случая, когда слово вообще не оценивается моделью текущего
     /// языка. Так бывает, когда в слове есть знаки препинания: "k.,jdm" — это
     /// «любовь», и точка с запятой здесь буквы. Английская модель такое слово
@@ -41,12 +68,8 @@ public struct DetectorThresholds: Sendable {
     /// с б, ю, ж, э, х, ъ — по замерам 15% корпуса.
     public var absoluteTarget: Double
 
-    public init(wordBoundary: Double, pause: Double, early: Double,
-                earlyMinLength: Int, absoluteTarget: Double) {
+    public init(wordBoundary: Double, absoluteTarget: Double) {
         self.wordBoundary   = wordBoundary
-        self.pause          = pause
-        self.early          = early
-        self.earlyMinLength = earlyMinLength
         self.absoluteTarget = absoluteTarget
     }
 
@@ -54,8 +77,7 @@ public struct DetectorThresholds: Sendable {
     /// (см. task-6-report.md за полными таблицами):
     ///
     ///   delta          +0.3 → FP 0.00%  FN 0.00%
-    ///                  +0.5 → FP 0.00%  FN 1.47%   ← wordBoundary, pause
-    ///                  +1.2 → FP 0.00%  FN 10.29%  ← early (строже намеренно)
+    ///                  +0.5 → FP 0.00%  FN 1.47%   ← wordBoundary
     ///
     /// (популяция ветки delta — 68 слов корпуса после обрезки границ в
     /// TrigramModel: было ~50 до фикса f78d89b, часть слов с пунктуацией на
@@ -76,11 +98,13 @@ public struct DetectorThresholds: Sendable {
     /// английских слов в другой раскладке даёт настоящие русские. Это та же
     /// принципиальная неоднозначность, что и в delta-ветке; частично снимается
     /// контекстом соседних слов (Task 6b).
+    ///
+    /// `pause` (0.5) и `early` (1.2, earlyMinLength 5) были здесь до фикса
+    /// преждевременной конверсии (см. doc-комментарий у `Trigger`) — убраны
+    /// вместе с самими триггерами, а не просто занулены, чтобы неиспользуемое
+    /// поле не намекало, что триггеры можно вернуть настройкой значения.
     public static let calibrated = DetectorThresholds(
         wordBoundary: 0.5,
-        pause: 0.5,
-        early: 1.2,
-        earlyMinLength: 5,
         absoluteTarget: -1.6
     )
 }
@@ -112,33 +136,28 @@ public final class LayoutDetector {
         self.thresholds = thresholds
     }
 
+    // `trigger` в сигнатуре — на будущее (контракт с вызывающей стороной,
+    // покрыт её тестами) и для симметрии с `Trigger`, у которого сейчас
+    // ровно один случай, `wordBoundary`; сама оценка от него больше не
+    // ветвится — режим префикса (terminated: false) убран вместе с early/
+    // pause, см. doc-комментарий у `Trigger`.
     public func evaluate(word: String, currentLayout: Layout, trigger: Trigger) -> Verdict {
         let target = currentLayout.opposite
-
-        if trigger == .early, word.count < thresholds.earlyMinLength { return .keep }
 
         // Слово, признанное словарём текущего языка, не трогаем никогда.
         // Статистика может ошибиться на редком слове, словарь — нет.
         if let validator, validator.isValid(word, in: currentLayout) { return .keep }
 
-        let terminated = trigger != .early
         guard let converted = mapper.transpose(word, from: currentLayout, to: target),
               let targetModel = models[target],
-              let targetScore = targetModel.meanLogProb(converted, terminated: terminated)
+              let targetScore = targetModel.meanLogProb(converted, terminated: true)
         else { return .keep }
-
-        let threshold: Double
-        switch trigger {
-        case .wordBoundary: threshold = thresholds.wordBoundary
-        case .pause:        threshold = thresholds.pause
-        case .early:        threshold = thresholds.early
-        }
 
         // Контекст соседних слов сдвигает порог: там, где одно слово
         // неразрешимо, язык предыдущих слов — единственный сигнал.
-        let effective = threshold - (prior?.bonus(forConverting: target) ?? 0)
+        let effective = thresholds.wordBoundary - (prior?.bonus(forConverting: target) ?? 0)
 
-        if let currentScore = models[currentLayout]?.meanLogProb(word, terminated: terminated) {
+        if let currentScore = models[currentLayout]?.meanLogProb(word, terminated: true) {
             guard targetScore - currentScore > effective else { return .keep }
         } else {
             // Модель текущего языка слово не оценивает — например, в нём есть

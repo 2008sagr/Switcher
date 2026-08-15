@@ -18,7 +18,7 @@ import Foundation
 ///   state queue  — выделенная последовательная очередь, единственный
 ///                  владелец `buffer` и всех полей, которые мутируют и тап,
 ///                  и колбэки настроек с main, и разбор двойного Shift:
-///                  buffer, pauseWorkItem, lastShiftTime, stateGuards,
+///                  buffer, lastShiftTime, stateGuards,
 ///                  stateLastSwitch, stateCurrentBundleID и теневые копии
 ///                  публичных настроек (state*). Здесь же — дешёвые
 ///                  синхронные проверки перед тем, как уйти в работу
@@ -138,7 +138,6 @@ public final class SwitchCoordinator: EventTapDelegate {
     private var stateCurrentBundleID = ""
     private var stateLastSwitch: LastSwitchInfo?
     private var lastShiftTime: TimeInterval = 0
-    private var pauseWorkItem: DispatchWorkItem?
 
     /// Мутируется только из start()/stop(), которые в этом кодбейзе всегда
     /// зовутся с main (AppState, кнопка «Перезапустить» в UI) — отдельной
@@ -149,7 +148,6 @@ public final class SwitchCoordinator: EventTapDelegate {
     private var inputSourceObserver: NSObjectProtocol?
 
     private let doubleShiftInterval: TimeInterval = 0.4
-    private let pauseInterval: TimeInterval = 0.5
 
     /// Системное уведомление о смене раскладки — приходит и на переключения
     /// пользователем, и на наши собственные (TISSelectInputSource рассылает
@@ -197,7 +195,6 @@ public final class SwitchCoordinator: EventTapDelegate {
             let newBundleID = app?.bundleIdentifier ?? ""
             self?.state.async {
                 self?.stateCurrentBundleID = newBundleID
-                self?.pauseWorkItem?.cancel()
                 self?.buffer.reset()   // Новое приложение — старый буфер невалиден.
                 self?.stateLastSwitch = nil
             }
@@ -209,7 +206,6 @@ public final class SwitchCoordinator: EventTapDelegate {
 
     public func stop() {
         tap.stop()
-        state.async { [weak self] in self?.pauseWorkItem?.cancel() }
         if let observer = appObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(observer)
             appObserver = nil
@@ -291,23 +287,27 @@ public final class SwitchCoordinator: EventTapDelegate {
     }
 
     /// Выполняется исключительно на `state`.
+    ///
+    /// Единственный повод для оценки слова — `.wordBreakKey` (граница слова).
+    /// Раньше `.key` тоже запускал оценку недописанного префикса (early) и
+    /// была ещё оценка по паузе (schedulePauseCheck/pauseWorkItem) — оба пути
+    /// убраны: префикс русского слова статистически неотличим от целого
+    /// русского слова, и никакой порог это не разделит (подробности и
+    /// замеры — в doc-комментарии у `Trigger` в LayoutDetector.swift).
+    /// `.key` теперь только копит буфер, ничего не оценивая.
     private func handle(_ event: TapEvent) {
         switch event {
         case .key(let stroke):
             buffer.append(stroke)
-            schedulePauseCheck()
-            if let word = buffer.currentWord { kickOffEvaluation(word, trigger: .early) }
 
         case .backspace:
             buffer.backspace()
             stateLastSwitch = nil
 
         case .wordBreakKey(let stroke):
-            pauseWorkItem?.cancel()
             if let word = buffer.wordEndedBy(stroke) { kickOffEvaluation(word, trigger: .wordBoundary) }
 
         case .resetCause, .mouseDown:
-            pauseWorkItem?.cancel()
             buffer.reset()
             // Контекст предыдущих слов больше не относится к делу:
             // каретка уехала или пользователь ушёл в другое место.
@@ -317,18 +317,6 @@ public final class SwitchCoordinator: EventTapDelegate {
         case .modifierOnly(let keyCode):
             handleModifier(keyCode)
         }
-    }
-
-    /// Выполняется на `state`: и планирование, и (при срабатывании) чтение
-    /// buffer.currentWord происходят на очереди-владельце буфера.
-    private func schedulePauseCheck() {
-        pauseWorkItem?.cancel()
-        let item = DispatchWorkItem { [weak self] in
-            guard let self, let word = self.buffer.currentWord else { return }
-            self.kickOffEvaluation(word, trigger: .pause)
-        }
-        pauseWorkItem = item
-        state.asyncAfter(deadline: .now() + pauseInterval, execute: item)
     }
 
     // MARK: - Детекция (граница state → work)
@@ -370,10 +358,12 @@ public final class SwitchCoordinator: EventTapDelegate {
         guard case .convert(let target, let text) = detector.evaluate(
             word: word.text, currentLayout: layout, trigger: trigger
         ) else {
-            // Слово оставлено как есть — оно тоже контекст.
-            // Запоминаем только на границе слова: на паузе и ранней
-            // конверсии слово ещё может быть дописано.
-            if trigger == .wordBoundary { prior.record(layout) }
+            // Слово оставлено как есть — оно тоже контекст. Раньше это
+            // ветвилось на trigger == .wordBoundary (на паузе и ранней
+            // конверсии слово ещё могло быть дописано, запоминать его как
+            // контекст было рано) — теперь evaluate() зовётся только на
+            // границе слова, слово всегда дописано, ветвиться не на чем.
+            prior.record(layout)
             return
         }
 
@@ -507,13 +497,11 @@ public final class SwitchCoordinator: EventTapDelegate {
         // конце finishUndo() (та же гонка, что и в apply(), находка 1:
         // finishUndo → injector.replace() может идти до секунды, и поздний
         // async-сброс из конца finishUndo() стирал бы нажатия следующего
-        // слова, накопившиеся за это время). В отличие от kickOffEvaluation
-        // (которая вызывается на каждый символ и не должна сбрасывать буфер
-        // впрок — иначе сломается непрерывное накопление префикса для early/
-        // pause), beginUndo — одноразовое решение по явному действию
-        // пользователя (двойной Shift): раз мы досюда дошли, отмена уже
-        // point of no return, и текущий буфер относится к тому, что
-        // печатается ПОСЛЕ отменяемого слова — самое время его обнулить.
+        // слова, накопившиеся за это время). beginUndo — одноразовое решение
+        // по явному действию пользователя (двойной Shift): раз мы досюда
+        // дошли, отмена уже point of no return, и текущий буфер относится к
+        // тому, что печатается ПОСЛЕ отменяемого слова — самое время его
+        // обнулить.
         buffer.reset()
         work.async { [weak self] in self?.finishUndo(info, bundleID: bundleID) }
     }

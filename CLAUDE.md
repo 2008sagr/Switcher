@@ -85,11 +85,13 @@ Removed in the rewrite: `KeyboardEngine.swift`, `TextReplacer.swift`, `SpellChec
 - **Delta branch** — the normal case. Both the current-layout model and the target-layout model score the word (`meanLogProb`); the decision is `targetScore − currentScore > threshold`.
 - **Absolute branch** — used when the current-layout model returns `nil`, i.e. the word contains characters outside its alphabet. This is not an edge case: it's how *every* Russian word containing б, ю, ж, э, х, ъ arrives, because on the EN layout those letters land on punctuation keys («любовь» is typed as `k.,jdm`). ~15% of the corpus goes through this branch. Here the decision is `targetScore > absoluteTarget threshold` — there's nothing to subtract from.
 
-Thresholds (`DetectorThresholds.calibrated`) are **measured**, not chosen: a calibration sweep (`LayoutDetectorCalibrationTests`) against a labeled corpus picked the operating point for each trigger. See the doc comment on `DetectorThresholds.calibrated` in [LayoutDetector.swift](Sources/Switcher/Core/Detection/LayoutDetector.swift) for the full sweep tables and reasoning — don't duplicate the numbers elsewhere; they're tied to the exact model build and will drift if repeated by hand.
+Thresholds (`DetectorThresholds.calibrated`) are **measured**, not chosen: a calibration sweep (`LayoutDetectorCalibrationTests`) against a labeled corpus picked the operating point. See the doc comment on `DetectorThresholds.calibrated` in [LayoutDetector.swift](Sources/Switcher/Core/Detection/LayoutDetector.swift) for the full sweep tables and reasoning — don't duplicate the numbers elsewhere; they're tied to the exact model build and will drift if repeated by hand.
 
 `LanguagePrior` tracks the layout of the last few confirmed words and shifts the effective threshold for the ~0.68% of the dictionary that's genuinely ambiguous by keystrokes alone (e.g. «руку» ↔ «here»), where a single-word model has a hard ceiling.
 
 **Word boundary is whitespace only.** Punctuation is deliberately *not* a boundary and stays inside the buffered word — same reason as the absolute branch above: on the wrong layout, punctuation keys are letters.
+
+**Evaluation happens only at the word boundary — there is exactly one `Trigger` case, `wordBoundary`.** Earlier versions also scored the word on every keystroke (`early`) and after a typing pause (`pause`), trying to react before the user finished typing. Both were removed, not just recalibrated, because the failure mode isn't a threshold problem: a truncated prefix of a long Russian word is statistically indistinguishable from a complete Russian word of that length (e.g. typing `ghjdt` — a prefix of `ghjdthrf` → «проверка» — scored as a confident, complete word and got converted mid-word, corrupting the rest of the word as it kept coming in the wrong layout). Short words never showed the bug because they're already below `minWordLength` and never reached the early/pause triggers. See the doc comment on `Trigger` in [LayoutDetector.swift](Sources/Switcher/Core/Detection/LayoutDetector.swift) for the full measurement and `testUnterminatedPrefixesScoreAsConfidentlyAsWholeWords` in `LayoutDetectorCalibrationTests.swift` for the regression test — don't reintroduce a per-keystroke or pause-based trigger without addressing this first.
 
 ### Replacement: four strategies with pre/post verification
 
@@ -140,7 +142,7 @@ The app uses **ad-hoc signing** (`codesign --sign -`) via Makefile. No Apple Dev
 
 ## Testing
 
-92 automated tests (plus 1 calibration test, skipped by default) live in the `SwitcherTests` **executable** target (`Sources/SwitcherTests/`), not a `Tests/` XCTest target — XCTest is not available in this environment. `main.swift` is a small hand-rolled runner (`runSuites`); run it with `swift run`, not `swift test`:
+98 automated tests (plus 1 calibration test, skipped by default) live in the `SwitcherTests` **executable** target (`Sources/SwitcherTests/`), not a `Tests/` XCTest target — XCTest is not available in this environment. `main.swift` is a small hand-rolled runner (`runSuites`); run it with `swift run`, not `swift test`:
 
 ```bash
 swift run SwitcherTests                          # full suite

@@ -88,37 +88,6 @@ func testCatchesWrongLayoutWords() throws {
                       "Пропусков \(misses.count)/\(total): \(misses.prefix(15))")
 }
 
-/// Ранний порог строже: на границе слова он не должен ловить меньше, чем ранний.
-/// Сравнение статических констант, раскладки не нужны — fixture не вызываем.
-func testEarlyTriggerIsStricterThanWordBoundary() throws {
-    XCTAssertGreaterThan(DetectorThresholds.calibrated.early,
-                         DetectorThresholds.calibrated.wordBoundary)
-}
-
-/// Ловит подмену case .pause ↔ case .early в switch по Trigger. В calibrated
-/// pause и wordBoundary совпадают (0.5), поэтому спутать .pause можно только
-/// с .early (1.2) — а проверка одного триггера в отрыве от другого такую
-/// подмену не поймает: нужно слово, чья delta лежит строго между 0.5 и 1.2,
-/// тогда .pause обязан дать convert, а .early на том же слове — keep.
-///
-/// «keyboard», опечатанное в русской раскладке, даёт "лунищфкв": delta с
-/// terminated=true (используется .pause) = 0.834, с terminated=false
-/// (используется .early — префиксный режим) = 0.721 — оба значения входят
-/// в (0.5, 1.2] с запасом. Длина 8 символов не задевает earlyMinLength=5,
-/// поэтому .early действительно оценивает слово статистикой, а не отсекает
-/// его по длине. Найдено прогоном sweep по корпусу задачи (детали — в
-/// task-6-report.md, «Фикс-раунд 3»).
-func testPauseTriggerUsesItsOwnThreshold() throws {
-    let (detector, mapper) = try makeFixture()
-    let typed = try XCTUnwrap(mapper.transpose("keyboard", from: .en, to: .ru))
-    XCTAssertEqual(detector.evaluate(word: typed, currentLayout: .ru, trigger: .pause),
-                   .convert(to: .en, text: "keyboard"),
-                   "\(typed): при пороге pause=0.5 и delta=0.834 слово должно исправляться")
-    XCTAssertEqual(detector.evaluate(word: typed, currentLayout: .ru, trigger: .early),
-                   .keep,
-                   "\(typed): при пороге early=1.2 то же слово должно остаться как есть")
-}
-
 /// Русские слова, где буквы стоят на клавишах знаков препинания.
 /// «любовь» в английской раскладке содержит "." и ",", поэтому английская
 /// модель его не оценивает — решение принимается по абсолютной оценке цели.
@@ -150,16 +119,6 @@ func testDoesNotTouchEnglishWordsWithTrailingPunctuation() throws {
         XCTAssertEqual(detector.evaluate(word: word, currentLayout: .en, trigger: .wordBoundary),
                        .keep, "\(word) — обычное английское слово со знаком препинания")
     }
-}
-
-func testEarlyTriggerRejectsShortPrefixes() throws {
-    let (detector, mapper) = try makeFixture()
-    guard let typed = mapper.transpose("привет", from: .ru, to: .en) else {
-        return XCTFail("Транспонирование должно работать")
-    }
-    let shortPrefix = String(typed.prefix(4))
-    XCTAssertEqual(detector.evaluate(word: shortPrefix, currentLayout: .en, trigger: .early), .keep,
-                   "Префикс короче earlyMinLength оценивать нельзя")
 }
 
 func testWordValidInCurrentLanguageIsNeverConverted() throws {
@@ -306,17 +265,61 @@ func testContextAppliesToAbsoluteTargetBranch() throws {
                    "Русский контекст должен сдвигать и абсолютный порог тоже")
 }
 
+/// РЕГРЕССИЯ на причину, по которой ранний и паузный триггеры убраны
+/// совсем (см. doc-комментарий у `Trigger`), а не перекалиброваны с более
+/// строгим порогом.
+///
+/// Это не гипотеза — воспроизводит замер, которым баг был найден. Слова
+/// ниже — недописанные префиксы реальных русских слов, набранные при
+/// активной английской раскладке (то есть то, что реально лежит в буфере
+/// в момент, когда старый ранний триггер срабатывал бы на каждый символ):
+///
+///   ghjdthrf → «проверка»: префиксы ghjd (4 симв.), ghjdt (5), ghjdth (6)
+///   ghbdtn   → «привет»:   префикс  ghbdt (5)
+///   dctulf   → «всегда»:   префикс  dctul (5)
+///
+/// Тест проверяет `delta(..., terminated: false)` — ровно тот режим оценки
+/// префикса, которым пользовался бывший early-триггер, — и требует, чтобы
+/// значение уверенно превышало `wordBoundary` (0.5, порог для ДОПИСАННЫХ
+/// слов). Замеренные значения (см. отчёт): ghjd 3.07, ghjdt 2.97,
+/// ghjdth 2.53, ghbdt 2.46, dctul 1.66 — все в разы выше 0.5. Порог здесь
+/// не занижен и не завышен: он вообще не пропускной — модель искренне
+/// считает недописанный префикс дописанным правдоподобным словом, потому
+/// что статистика триграмм префикса неотличима от статистики целого слова
+/// такой же длины. Значит калибровкой порога (сколь угодно строгого) эту
+/// проблему не решить в принципе — защититься можно только не оценивая
+/// префиксы вообще, то есть конвертируя исключительно на границе слова.
+func testUnterminatedPrefixesScoreAsConfidentlyAsWholeWords() throws {
+    let (detector, _) = try makeFixture()
+    // (набранный префикс, сколько букв от целого слова)
+    let prefixes: [(typed: String, of: String)] = [
+        ("ghjd",   "проверка"),  // «пров»
+        ("ghjdt",  "проверка"),  // «прове»
+        ("ghjdth", "проверка"),  // «провер»
+        ("ghbdt",  "привет"),    // «приве»
+        ("dctul",  "всегда"),    // «всегд»
+    ]
+    for (typed, whole) in prefixes {
+        let delta = try XCTUnwrap(
+            detector.delta(word: typed, currentLayout: .en, terminated: false),
+            "\(typed): модель должна оценивать префикс — иначе тест не о том"
+        )
+        XCTAssertGreaterThan(delta, DetectorThresholds.calibrated.wordBoundary,
+            "\(typed) (префикс «\(whole)») набирает delta \(delta), что выше порога для " +
+            "ЦЕЛЫХ слов (\(DetectorThresholds.calibrated.wordBoundary)) — префикс неотличим " +
+            "от дописанного слова, поэтому единственная защита — не оценивать префиксы")
+    }
+}
+
 let layoutDetectorCalibrationTests: [TestCase] = [
     TestCase("testNoFalsePositivesOnCorrectlyTypedWords", testNoFalsePositivesOnCorrectlyTypedWords),
     TestCase("testCatchesWrongLayoutWords", testCatchesWrongLayoutWords),
-    TestCase("testEarlyTriggerIsStricterThanWordBoundary", testEarlyTriggerIsStricterThanWordBoundary),
-    TestCase("testPauseTriggerUsesItsOwnThreshold", testPauseTriggerUsesItsOwnThreshold),
     TestCase("testCatchesWordsWithPunctuationPositionedLetters", testCatchesWordsWithPunctuationPositionedLetters),
     TestCase("testDoesNotTouchEnglishWordsWithTrailingPunctuation", testDoesNotTouchEnglishWordsWithTrailingPunctuation),
-    TestCase("testEarlyTriggerRejectsShortPrefixes", testEarlyTriggerRejectsShortPrefixes),
     TestCase("testWordValidInCurrentLanguageIsNeverConverted", testWordValidInCurrentLanguageIsNeverConverted),
     TestCase("testPrintThresholdSweep", testPrintThresholdSweep),
     TestCase("testContextResolvesAmbiguousWord", testContextResolvesAmbiguousWord),
     TestCase("testContextDoesNotBreakCommonEnglishWordInRussianText", testContextDoesNotBreakCommonEnglishWordInRussianText),
-    TestCase("testContextAppliesToAbsoluteTargetBranch", testContextAppliesToAbsoluteTargetBranch)
+    TestCase("testContextAppliesToAbsoluteTargetBranch", testContextAppliesToAbsoluteTargetBranch),
+    TestCase("testUnterminatedPrefixesScoreAsConfidentlyAsWholeWords", testUnterminatedPrefixesScoreAsConfidentlyAsWholeWords)
 ]
