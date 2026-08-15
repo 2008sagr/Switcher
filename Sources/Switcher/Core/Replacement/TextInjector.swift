@@ -3,7 +3,7 @@ import ApplicationServices
 import CoreGraphics
 import Foundation
 
-public enum InjectionStrategy: String, CaseIterable, Codable, Sendable {
+public enum InjectionStrategy: String, CaseIterable, Codable, Equatable, Hashable, Sendable {
     /// Прямая правка диапазона через AX. Ноль синтетических событий.
     case axDirect
     /// Смена раскладки и переигрывание тех же клавиш. Для терминалов и игр,
@@ -13,6 +13,29 @@ public enum InjectionStrategy: String, CaseIterable, Codable, Sendable {
     case selectAndInject
     /// Вставка через буфер обмена. Последний резерв.
     case clipboard
+}
+
+/// Исход одной стратегии замены. Раньше был Bool — этого недостаточно:
+/// стратегии B/C/D сперва меняют текст синтетическими событиями и только
+/// потом проверяют результат, а Bool не различает «ничего не трогали,
+/// провалились на входе» от «уже поменяли текст, но проверить нечем».
+/// Смешение этих исходов в перебор TextInjector.replace() приводило к
+/// повторному применению следующей стратегией поверх уже применённой первой
+/// (дублирование текста в терминале) и к порче хвоста слова (Shift+←
+/// в терминале двигает каретку, а не выделяет — следующая стратегия решала,
+/// что предыдущая ничего не сделала, и сама съедала пробел перед словом).
+enum StrategyOutcome: Equatable {
+    /// Текст заменён и подтверждён последующим чтением через AX.
+    case succeeded
+    /// Текст уже изменён синтетическими событиями, но подтвердить нечем
+    /// (типично для терминалов: AX там видит буфер терминала, а не текстовое
+    /// поле, и пост-проверка никогда не сойдётся). Перебор обязан
+    /// остановиться здесь — попытка следующей стратегии ударила бы по уже
+    /// применённой замене.
+    case mutatedUnverified
+    /// Текст гарантированно не тронут — можно безопасно пробовать следующую
+    /// стратегию.
+    case notApplicable
 }
 
 public struct ReplacementRequest {
@@ -94,6 +117,39 @@ public final class TextInjector {
                          wordLength: wordLength)
     }
 
+    // MARK: - Правило перебора
+
+    /// Итог прогона списка стратегий по порядку.
+    enum TrialOutcome: Equatable {
+        /// Сработала и подтвердилась — вот эта.
+        case succeeded(InjectionStrategy)
+        /// Эта стратегия уже поменяла текст, но подтвердить нечем — перебор
+        /// остановлен на ней, дальше не идём.
+        case mutatedUnverified(InjectionStrategy)
+        /// Все стратегии отказали, ничего не тронуто.
+        case exhausted
+    }
+
+    /// Чистая функция ради тестируемости: сама не делает системных вызовов,
+    /// только применяет правило перебора к уже готовым исходам, которые ей
+    /// поставляет `perform`. Правило:
+    ///   .succeeded         → вернуть эту стратегию, остановиться.
+    ///   .mutatedUnverified → остановиться НА НЕЙ ЖЕ, следующую не пробовать:
+    ///                        текст уже изменён, повторное применение его
+    ///                        испортит (дублирование, съеденный пробел).
+    ///   .notApplicable     → перейти к следующей стратегии по порядку.
+    static func runTrial(order: [InjectionStrategy],
+                          perform: (InjectionStrategy) -> StrategyOutcome) -> TrialOutcome {
+        for strategy in order {
+            switch perform(strategy) {
+            case .succeeded:          return .succeeded(strategy)
+            case .mutatedUnverified:  return .mutatedUnverified(strategy)
+            case .notApplicable:      continue
+            }
+        }
+        return .exhausted
+    }
+
     // MARK: - Точка входа
 
     /// Синхронный. Вызывать только с фоновой очереди: внутри AX-вызовы.
@@ -118,17 +174,26 @@ public final class TextInjector {
             order = InjectionStrategy.allCases
         }
 
-        for strategy in order {
-            if perform(strategy, request) {
-                recordSuccess(strategy, for: request.bundleID)
-                return true
-            }
-            recordFailure(strategy, for: request.bundleID)
+        switch Self.runTrial(order: order, perform: { candidate in
+            let outcome = perform(candidate, request)
+            // Понижаем стратегию ТОЛЬКО когда она гарантированно ничего не
+            // тронула — иначе кэш забыл бы стратегию, которая скорее всего
+            // работает, просто в этом приложении подтвердить нечем (терминал),
+            // и каждая следующая замена заново перебирала бы варианты.
+            if outcome == .notApplicable { recordFailure(candidate, for: request.bundleID) }
+            return outcome
+        }) {
+        case .succeeded(let strategy):
+            recordSuccess(strategy, for: request.bundleID)
+            return true
+        case .mutatedUnverified:
+            return true
+        case .exhausted:
+            return false
         }
-        return false
     }
 
-    private func perform(_ strategy: InjectionStrategy, _ request: ReplacementRequest) -> Bool {
+    private func perform(_ strategy: InjectionStrategy, _ request: ReplacementRequest) -> StrategyOutcome {
         switch strategy {
         case .axDirect:        return replaceViaAX(request)
         case .keycodeReplay:   return replaceViaKeycodeReplay(request)
@@ -156,35 +221,54 @@ public final class TextInjector {
 
     // MARK: - Стратегия A: прямая правка через AX
 
-    private func replaceViaAX(_ request: ReplacementRequest) -> Bool {
-        guard let (element, plan) = verifiedPlan(request) else { return false }
+    private func replaceViaAX(_ request: ReplacementRequest) -> StrategyOutcome {
+        // Pre-flight — до любых мутаций, только чтение (verifiedPlan сама
+        // ничего не пишет: focusedElement/isSecure/caretLocation/string).
+        guard let (element, plan) = verifiedPlan(request) else { return .notApplicable }
 
-        guard ax.select(element, location: plan.start, length: plan.wordLength),
-              ax.replaceSelection(element, with: request.replacement)
-        else {
+        // ax.select — это перемещение выделения, не правка текста, поэтому
+        // отказ здесь всё ещё «ничего не тронуто».
+        guard ax.select(element, location: plan.start, length: plan.wordLength) else {
+            return .notApplicable
+        }
+
+        // ax.replaceSelection — единственный собственно мутирующий вызов
+        // здесь, и в отличие от CGEvent-стратегий B/C/D это синхронный
+        // блокирующий IPC-вызов к AX сервера приложения с определённым
+        // ответом: false означает, что приложение ОТКЛОНИЛО запись целиком,
+        // а не «применило частично». Поэтому здесь ещё можно безопасно
+        // уступить следующей стратегии.
+        guard ax.replaceSelection(element, with: request.replacement) else {
             // Вернуть каретку туда, где она была.
             _ = ax.select(element, location: plan.start + plan.wordLength + request.tail.utf16.count, length: 0)
-            return false
+            return .notApplicable
         }
 
         let newWordLength = request.replacement.utf16.count
         _ = ax.select(element, location: plan.start + newWordLength + request.tail.utf16.count, length: 0)
 
-        // Пост-проверка: убедиться, что приложение действительно применило правку.
+        // Пост-проверка. AX уже подтвердил применение правки (replaceSelection
+        // вернул true) — точка невозврата пройдена ДО этой строки. Несовпадение
+        // здесь означает «не смогли перечитать» (например, приложение сразу
+        // после правки что-то ещё поменяло), а не «не применили», поэтому
+        // дальше — mutatedUnverified, а не notApplicable.
         let expected = request.replacement + request.tail
-        return ax.string(element, location: plan.start, length: expected.utf16.count) == expected
+        if ax.string(element, location: plan.start, length: expected.utf16.count) == expected {
+            return .succeeded
+        }
+        return .mutatedUnverified
     }
 
     // MARK: - Стратегия B: переигрывание keycode'ов
 
-    func replaceViaKeycodeReplay(_ request: ReplacementRequest) -> Bool {
+    func replaceViaKeycodeReplay(_ request: ReplacementRequest) -> StrategyOutcome {
         // Без нажатий переигрывать нечем. Ниже сначала идёт sendBackspaces —
         // без этой проверки исходный текст удалился бы, а взамен не
         // напечаталось бы ничего: слово пропадает у пользователя без следа
         // и без сообщения об ошибке (см. ревью Task 12, находка 2). Отказ
         // здесь — страховка на уровне самого инжектора, а не только на
         // уровне вызывающего кода, который обязан передавать strokes.
-        guard !request.strokes.isEmpty else { return false }
+        guard !request.strokes.isEmpty else { return .notApplicable }
 
         // Вторая линия защиты (финальное ревью, находка 1). Без AX сверить
         // состояние нечем вообще: раньше это место молча пропускало
@@ -211,21 +295,24 @@ public final class TextInjector {
         //      (TextInjector.replace()) и могут сработать в том же самом
         //      приложении — пользователь в худшем случае не получает
         //      исправления в этот раз, а не порченный текст.
-        guard let element = ax.focusedElement() else { return false }
-        guard !ax.isSecure(element) else { return false }
+        guard let element = ax.focusedElement() else { return .notApplicable }
+        guard !ax.isSecure(element) else { return .notApplicable }
         if let caret = ax.caretLocation(element),
            let plan = Self.planRange(caret: caret, request: request),
            let actual = ax.string(element, location: plan.start, length: plan.verifyLength),
            actual != request.original + request.tail {
-            return false
+            return .notApplicable
         }
 
         // Раскладка меняется ПЕРЕД переигрыванием и подтверждается уведомлением,
-        // а не задержкой: иначе клавиши отрисуются в старой раскладке.
+        // а не задержкой: иначе клавиши отрисуются в старой раскладке. Отказ
+        // здесь — ещё до backspace'ов, текст не тронут.
         let switched = DispatchSemaphore(value: 0)
         onSwitchLayout(request.targetLayout) { switched.signal() }
-        guard switched.wait(timeout: .now() + 1.0) == .success else { return false }
+        guard switched.wait(timeout: .now() + 1.0) == .success else { return .notApplicable }
 
+        // Точка невозврата: синтетические события летят в очередь, назад их
+        // не забрать — отсюда и ниже только .succeeded или .mutatedUnverified.
         let deleteCount = request.original.utf16.count + request.tail.utf16.count
         sendBackspaces(deleteCount)
         for stroke in request.strokes {
@@ -236,13 +323,21 @@ public final class TextInjector {
         }
 
         // Приложение обрабатывает события асинхронно, поэтому пост-проверку
-        // делаем через AX там, где он есть; иначе доверяем порядку доставки.
+        // делаем через AX там, где он есть; иначе доверяем порядку доставки —
+        // ЭТО и есть терминальный случай: AX терминала видит буфер терминала,
+        // а не текстовое поле, сверить нечем в принципе, и так будет всегда.
+        // Раньше здесь стояло `return true`, что при провале следующей
+        // сверки ниже вырождалось в `return false` — то есть считалось, что
+        // ничего не изменилось, хотя события уже отправлены. Отсюда и
+        // дублирование текста в терминале: перебор шёл дальше, к
+        // replaceViaSelection, которая вставляла строку ещё раз.
         guard let element = ax.focusedElement(),
-              let caret = ax.caretLocation(element) else { return true }
+              let caret = ax.caretLocation(element) else { return .mutatedUnverified }
         let expected = request.replacement + request.tail
         let start = caret - expected.utf16.count
-        guard start >= 0 else { return true }
+        guard start >= 0 else { return .mutatedUnverified }
         return ax.string(element, location: start, length: expected.utf16.count) == expected
+            ? .succeeded : .mutatedUnverified
     }
 
     // MARK: - Стратегия C: выделение и одна вставка
@@ -264,69 +359,81 @@ public final class TextInjector {
         return selected == expected
     }
 
-    private func replaceViaSelection(_ request: ReplacementRequest) -> Bool {
-        if let element = ax.focusedElement(), ax.isSecure(element) { return false }
+    private func replaceViaSelection(_ request: ReplacementRequest) -> StrategyOutcome {
+        if let element = ax.focusedElement(), ax.isSecure(element) { return .notApplicable }
 
         let count = request.original.utf16.count + request.tail.utf16.count
         for _ in 0..<count {
             postKey(123, shift: true)   // kVK_LeftArrow с Shift
         }
 
-        // Читать выделение часто можно даже там, где писать в него нельзя.
+        // До этой точки посланы только стрелки (Shift+←) — они двигают
+        // каретку или расширяют выделение, но сами по себе НИКОГДА не
+        // вставляют и не удаляют символы ни в одном текстовом поле. Это
+        // верно и в терминалах, где Shift+← часто вообще не создаёт
+        // выделения, а просто двигает курсор (см. пост-проверку выше по
+        // стеку — replaceViaKeycodeReplay): для нас разница неважна, в обоих
+        // случаях текст гарантированно не тронут. Поэтому отказ здесь —
+        // ещё .notApplicable, а не .mutatedUnverified.
         if let element = ax.focusedElement(),
            !Self.selectionMatchesExpectation(ax.selectedText(element),
                                               expected: request.original + request.tail) {
-            // Выделили не то — снять выделение и уйти.
+            // Выделили не то (или закаретили не туда) — снять выделение и уйти.
             postKey(124, shift: false)  // kVK_RightArrow
-            return false
+            return .notApplicable
         }
 
-        // Одно событие со всей строкой: приложение получает один insertText,
-        // это один шаг undo и между символами нечему разъехаться.
+        // Точка невозврата: одно событие со всей строкой. Приложение
+        // получает один insertText, это один шаг undo и между символами
+        // нечему разъехаться — но дальше текст уже изменён, откатить нельзя.
         postUnicode(request.replacement + request.tail)
 
         guard let element = ax.focusedElement(),
-              let caret = ax.caretLocation(element) else { return true }
+              let caret = ax.caretLocation(element) else { return .mutatedUnverified }
         let expected = request.replacement + request.tail
         let start = caret - expected.utf16.count
-        guard start >= 0 else { return true }
+        guard start >= 0 else { return .mutatedUnverified }
         return ax.string(element, location: start, length: expected.utf16.count) == expected
+            ? .succeeded : .mutatedUnverified
     }
 
     // MARK: - Стратегия D: буфер обмена
 
-    private func replaceViaClipboard(_ request: ReplacementRequest) -> Bool {
-        if let element = ax.focusedElement(), ax.isSecure(element) { return false }
+    private func replaceViaClipboard(_ request: ReplacementRequest) -> StrategyOutcome {
+        if let element = ax.focusedElement(), ax.isSecure(element) { return .notApplicable }
 
         let guardian = ClipboardGuard()
-        guard guardian.write(request.replacement + request.tail) else { return false }
+        // Запись в СВОЙ буфер обмена не трогает текст целевого приложения —
+        // отказ здесь по-прежнему .notApplicable.
+        guard guardian.write(request.replacement + request.tail) else { return .notApplicable }
         defer { guardian.restore() }
 
         let count = request.original.utf16.count + request.tail.utf16.count
         for _ in 0..<count { postKey(123, shift: true) }   // kVK_LeftArrow с Shift
 
-        // Сверка симметрично стратегии C (находка 3, финальное ревью):
-        // это последний резервный путь, то есть срабатывает ровно тогда,
-        // когда состояние наименее надёжно проверено — до этой правки
-        // Cmd+V нажимался сразу после выделения, без единой проверки,
-        // что выделено действительно ожидаемое слово.
+        // Сверка симметрично стратегии C: до Cmd+V посланы только стрелки —
+        // движение каретки/выделения, не правка текста, поэтому отказ здесь
+        // всё ещё .notApplicable (находка 3, финальное ревью: раньше D не
+        // сверяла вообще ничего перед вставкой).
         if let element = ax.focusedElement(),
            !Self.selectionMatchesExpectation(ax.selectedText(element),
                                               expected: request.original + request.tail) {
             // Выделили не то — снять выделение и уйти, буфер обмена
             // восстановится через defer выше, вставки не будет.
             postKey(124, shift: false)  // kVK_RightArrow
-            return false
+            return .notApplicable
         }
 
+        // Точка невозврата: Cmd+V вставляет буфер обмена в приложение.
         postCommandKey(9)   // kVK_ANSI_V
 
         guard let element = ax.focusedElement(),
-              let caret = ax.caretLocation(element) else { return true }
+              let caret = ax.caretLocation(element) else { return .mutatedUnverified }
         let expected = request.replacement + request.tail
         let start = caret - expected.utf16.count
-        guard start >= 0 else { return true }
+        guard start >= 0 else { return .mutatedUnverified }
         return ax.string(element, location: start, length: expected.utf16.count) == expected
+            ? .succeeded : .mutatedUnverified
     }
 
     // MARK: - Постинг событий

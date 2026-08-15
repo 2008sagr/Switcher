@@ -77,7 +77,7 @@ func testKeycodeReplayRefusesEmptyStrokes() throws {
         strokes: [], original: "привет", replacement: "ghbdtn",
         tail: "", targetLayout: .en, bundleID: "com.example.app"
     )
-    XCTAssertFalse(injector.replaceViaKeycodeReplay(req),
+    XCTAssertEqual(injector.replaceViaKeycodeReplay(req), .notApplicable,
                    "Пустые strokes — сигнал отказать до удаления текста, а не после")
 }
 
@@ -125,6 +125,80 @@ func testReplaceRefusesEmptyReplacement() throws {
                    "Пустая замена — отказ до вызова любой стратегии, а не тихое удаление слова")
 }
 
+// MARK: - Правило перебора (TextInjector.runTrial)
+//
+// Дефект, который чинят эти тесты: TextInjector.replace() перебирал
+// стратегии как булевы — «не сработала, пробуем следующую» — не различая
+// «ничего не тронула» и «уже поменяла текст, но подтвердить нечем». В
+// терминале keycodeReplay меняла текст (backspace + переигранные нажатия),
+// пост-проверка через AX не сходилась (AX терминала видит буфер терминала,
+// а не текстовое поле) и возвращала false — перебор шёл дальше, к
+// replaceViaSelection, которая вставляла ту же строку ЕЩЁ РАЗ: отсюда
+// дублирование «test» → «testtest» и съеденный пробел перед словом.
+//
+// Правило проверяется здесь на чистой функции runTrial, без единого живого
+// AX/CGEvent вызова: стратегии подменены замыканием, которое просто
+// возвращает заготовленный исход и запоминает порядок вызовов.
+
+/// Прогоняет `runTrial` с заготовленными исходами по порядку `InjectionStrategy.allCases`
+/// и возвращает список фактически опрошенных стратегий вместе с итогом.
+private func trial(_ outcomes: [InjectionStrategy: StrategyOutcome])
+    -> (called: [InjectionStrategy], result: TextInjector.TrialOutcome) {
+    var called: [InjectionStrategy] = []
+    let result = TextInjector.runTrial(order: InjectionStrategy.allCases) { strategy in
+        called.append(strategy)
+        return outcomes[strategy] ?? .notApplicable
+    }
+    return (called, result)
+}
+
+/// .notApplicable — гарантированно ничего не тронуто, перебор обязан идти
+/// дальше по списку и в итоге дойти до стратегии, которая сработала.
+func testTrialContinuesPastNotApplicable() throws {
+    let (called, result) = trial([
+        .axDirect: .notApplicable,
+        .keycodeReplay: .notApplicable,
+        .selectAndInject: .notApplicable,
+        .clipboard: .succeeded
+    ])
+    XCTAssertEqual(called, InjectionStrategy.allCases,
+                   "Каждая нотApplicable-стратегия обязана уступать место следующей")
+    XCTAssertEqual(result, .succeeded(.clipboard))
+}
+
+/// .mutatedUnverified — текст уже изменён этой стратегией. Перебор обязан
+/// ОСТАНОВИТЬСЯ на ней: следующая стратегия по счёту не должна быть даже
+/// опрошена, иначе она применит замену повторно поверх уже применённой —
+/// ровно баг из симптома пользователя (дублирование текста в терминале).
+func testTrialStopsAtMutatedUnverified() throws {
+    let (called, result) = trial([
+        .axDirect: .notApplicable,
+        .keycodeReplay: .mutatedUnverified
+        // selectAndInject и clipboard намеренно не заданы: если перебор
+        // дойдёт до них, outcomes[...] вернёт .notApplicable по умолчанию,
+        // и тест это не поймает через result — поэтому решает именно `called`.
+    ])
+    XCTAssertEqual(called, [.axDirect, .keycodeReplay],
+                   "После mutatedUnverified ни одна следующая стратегия не должна быть опрошена")
+    XCTAssertEqual(result, .mutatedUnverified(.keycodeReplay))
+}
+
+/// .succeeded останавливает перебор немедленно, даже первой стратегией.
+func testTrialStopsImmediatelyOnSucceeded() throws {
+    let (called, result) = trial([.axDirect: .succeeded])
+    XCTAssertEqual(called, [.axDirect],
+                   "Успех первой же стратегии — остальные опрашивать незачем")
+    XCTAssertEqual(result, .succeeded(.axDirect))
+}
+
+/// Если все стратегии гарантированно ничего не тронули — итог exhausted,
+/// а не мутация: replace() обязан вернуть false, не соврав об успехе.
+func testTrialExhaustedWhenAllNotApplicable() throws {
+    let (called, result) = trial([:])
+    XCTAssertEqual(called, InjectionStrategy.allCases)
+    XCTAssertEqual(result, .exhausted)
+}
+
 let textInjectorTests: [TestCase] = [
     TestCase("testRangeCoversWordPlusTail", testRangeCoversWordPlusTail),
     TestCase("testRangeWithoutTail", testRangeWithoutTail),
@@ -137,5 +211,9 @@ let textInjectorTests: [TestCase] = [
     TestCase("testSelectionMatchTrustsUnreadableSelection", testSelectionMatchTrustsUnreadableSelection),
     TestCase("testSelectionMatchAcceptsExactSelection", testSelectionMatchAcceptsExactSelection),
     TestCase("testSelectionMatchCatchesMismatch", testSelectionMatchCatchesMismatch),
-    TestCase("testReplaceRefusesEmptyReplacement", testReplaceRefusesEmptyReplacement)
+    TestCase("testReplaceRefusesEmptyReplacement", testReplaceRefusesEmptyReplacement),
+    TestCase("testTrialContinuesPastNotApplicable", testTrialContinuesPastNotApplicable),
+    TestCase("testTrialStopsAtMutatedUnverified", testTrialStopsAtMutatedUnverified),
+    TestCase("testTrialStopsImmediatelyOnSucceeded", testTrialStopsImmediatelyOnSucceeded),
+    TestCase("testTrialExhaustedWhenAllNotApplicable", testTrialExhaustedWhenAllNotApplicable)
 ]
