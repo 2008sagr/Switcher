@@ -41,13 +41,6 @@ public class AppState: ObservableObject {
         }
     }
 
-    @Published public var learningEnabled: Bool {
-        didSet {
-            UserDefaults.standard.set(learningEnabled, forKey: "learningEnabled")
-            engine.learningEnabled = learningEnabled
-        }
-    }
-
     private var applyingLaunchAtLogin = false
 
     @Published public var launchAtLoginEnabled: Bool {
@@ -143,7 +136,6 @@ public class AppState: ObservableObject {
         autoSwitchEnabled    = UserDefaults.standard.object(forKey: "autoSwitchEnabled")   as? Bool ?? true
         doubleShiftEnabled   = UserDefaults.standard.object(forKey: "doubleShiftEnabled")  as? Bool ?? true
         minWordLength        = UserDefaults.standard.object(forKey: "minWordLength")       as? Int  ?? 4
-        learningEnabled      = UserDefaults.standard.object(forKey: "learningEnabled")     as? Bool ?? true
         launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
         dictionary           = savedDict
 
@@ -151,7 +143,6 @@ public class AppState: ObservableObject {
         engine.autoSwitchEnabled  = autoSwitchEnabled
         engine.doubleShiftEnabled = doubleShiftEnabled
         engine.minWordLength      = minWordLength
-        engine.learningEnabled    = learningEnabled
         engine.exclusions         = savedDict.exceptionsSet
         engine.excludedApps       = savedDict.excludedAppsSet
         engine.corrections        = savedDict.correctionsMap
@@ -173,12 +164,14 @@ public class AppState: ObservableObject {
             print("[Switcher] Замена не удалась: «\(word)»")
         }
 
-        engine.onUndone = { [weak self] info in
+        // Отмена больше не заносит слово в исключения автоматически: одна
+        // случайная отмена раньше означала вечную блокировку слова без
+        // всякой обратной связи для пользователя (см. коммит). Отмена
+        // только возвращает текст — исключения теперь только вручную,
+        // через настройки (addException/removeException).
+        engine.onUndone = { [weak self] _ in
             DispatchQueue.main.async {
                 self?.lastSwitch = nil
-                if self?.learningEnabled == true, !info.isCorrection {
-                    self?.addException(info.originalWord)
-                }
             }
         }
 

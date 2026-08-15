@@ -46,11 +46,6 @@ struct GeneralTab: View {
                     .help("Дважды нажмите Shift, чтобы отменить последнюю замену: исходное слово восстанавливается, раскладка возвращается.")
             }
 
-            Section("Обучение") {
-                Toggle("Учиться на исправлениях", isOn: $appState.learningEnabled)
-                    .help("Отмена двойным Shift → слово добавляется в исключения.")
-            }
-
             Section("Разрешения") {
                 HStack {
                     Image(systemName: appState.hasAccessibility ? "checkmark.seal.fill" : "xmark.seal.fill")
@@ -97,10 +92,8 @@ struct DetectionTab: View {
                 VStack(alignment: .leading, spacing: 6) {
                     Label("Дважды нажмите Shift, чтобы отменить последнюю замену.", systemImage: "arrow.uturn.backward")
                     Label("Исходное слово восстанавливается, раскладка возвращается.", systemImage: "keyboard")
-                    if appState.learningEnabled {
-                        Label("Обучение включено — отменённые слова добавляются в исключения.", systemImage: "brain")
-                            .foregroundColor(.accentColor)
-                    }
+                    Label("Отменённые слова никуда не запоминаются — исключения добавляются только вручную, во вкладке «Словарь».", systemImage: "hand.raised")
+                        .foregroundColor(.secondary)
                 }
                 .font(.callout)
             }
@@ -623,7 +616,6 @@ struct AboutTab: View {
             VStack(alignment: .leading, spacing: 8) {
                 FeatureRow(icon: "wand.and.sparkles",     text: "Автоматически определяет и исправляет ввод в неверной раскладке")
                 FeatureRow(icon: "arrow.uturn.backward",  text: "Двойной Shift отменяет последнюю замену")
-                FeatureRow(icon: "brain",                 text: "Учится на исправлениях, чтобы не повторять ошибки")
                 FeatureRow(icon: "text.book.closed",      text: "Редактируемый словарь исключений с импортом/экспортом")
                 FeatureRow(icon: "app.badge.checkmark",   text: "Исключения по приложениям для редакторов и терминалов")
                 FeatureRow(icon: "text.badge.checkmark",  text: "Правила исправления опечаток — напр. чтото → что-то")

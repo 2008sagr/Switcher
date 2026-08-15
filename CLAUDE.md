@@ -70,7 +70,7 @@ main queue
 | `Core/SwitchCoordinator.swift` | wires tap → detector → injector; owns the three-queue split; double-Shift undo |
 | `Core/SystemWordValidator.swift` | `NSSpellChecker` wrapped as `WordValidating`, LRU cache with TTL |
 | `Core/AppState.swift` | `ObservableObject` managing settings, unchanged from before the rewrite |
-| `Core/SwitchDictionary.swift` | learning and exclusions, unchanged from before the rewrite |
+| `Core/SwitchDictionary.swift` | manual exceptions/corrections storage, unchanged from before the rewrite |
 | `Core/InputSourceManager.swift` | TIS layout switching, unchanged from before the rewrite |
 | `Tools/build_trigram_model.py` | offline generator for `Resources/en.trigram` / `ru.trigram` (not run at build time) |
 

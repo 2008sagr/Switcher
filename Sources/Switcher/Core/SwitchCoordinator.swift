@@ -51,9 +51,6 @@ public final class SwitchCoordinator: EventTapDelegate {
     // потоком, что и сама запись — единственный писатель, гонки нет) снимает
     // копию значения и передаёт её на `state`-очередь: именно теневая копия
     // (state*) — то, что фактически читают обработка тапа и детекция.
-    // learningEnabled нигде в координаторе не читается (логику обучения
-    // ведёт сам AppState по своей копии), поэтому теневой копии не заведено —
-    // синхронизировать нечего.
 
     public var autoSwitchEnabled = true {
         didSet {
@@ -73,7 +70,6 @@ public final class SwitchCoordinator: EventTapDelegate {
             state.async { [weak self] in self?.stateMinWordLength = value }
         }
     }
-    public var learningEnabled = true
     public var exclusions: Set<String> = [] {
         didSet {
             let excl = exclusions, apps = excludedApps

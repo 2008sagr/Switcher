@@ -132,7 +132,6 @@ struct MenuBarContentView: View {
             VStack(spacing: 4) {
                 QuickToggleRow(icon: "wand.and.sparkles", label: "Автопереключение",  isOn: $appState.autoSwitchEnabled)
                 QuickToggleRow(icon: "shift.fill",         label: "Двойной Shift",     isOn: $appState.doubleShiftEnabled)
-                QuickToggleRow(icon: "brain",              label: "Обучение",          isOn: $appState.learningEnabled)
             }
             .padding(.horizontal, 16)
             .padding(.vertical, 8)
