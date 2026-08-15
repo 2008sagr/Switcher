@@ -125,6 +125,27 @@ func testSelectionMatchCatchesMismatch() throws {
                    "Выделили не то, что ожидалось, — сверка обязана поймать это до вставки")
 }
 
+/// Находка 4 (финальное ревью): файл словаря (~/.switcher/dictionary.json)
+/// спроектирован для ручного редактирования, а SwitchDictionary.load()
+/// декодирует его без валидации — гвард в addCorrection защищает только путь
+/// через UI настроек. Пустая замена, вписанная вручную в файл, дошла бы до
+/// TextInjector.replace() как replacement: "", и ни одна из четырёх стратегий
+/// не отказала бы сама по себе (все сверяют исходный текст под кареткой, а
+/// не непустоту замены) — слово тихо удалилось бы. Зовём именно публичный
+/// replace(), а не отдельную стратегию: guard должен сработать ДО перебора
+/// стратегий, поэтому тест безопасен — до живых AX/CGEvent вызовов дело не
+/// доходит.
+func testReplaceRefusesEmptyReplacement() throws {
+    let injector = TextInjector(ax: AXTextClient(), onSwitchLayout: { _, done in done() })
+    let req = ReplacementRequest(
+        strokes: [KeyStroke(keyCode: 0, shift: false, char: "g")],
+        original: "ghbdtn", replacement: "",
+        tail: " ", targetLayout: .ru, bundleID: "com.example.app"
+    )
+    XCTAssertFalse(injector.replace(req),
+                   "Пустая замена — отказ до вызова любой стратегии, а не тихое удаление слова")
+}
+
 let textInjectorTests: [TestCase] = [
     TestCase("testRangeCoversWordPlusTail", testRangeCoversWordPlusTail),
     TestCase("testRangeWithoutTail", testRangeWithoutTail),
@@ -137,5 +158,6 @@ let textInjectorTests: [TestCase] = [
     TestCase("testKeycodeReplayRefusesWithoutAX", testKeycodeReplayRefusesWithoutAX),
     TestCase("testSelectionMatchTrustsUnreadableSelection", testSelectionMatchTrustsUnreadableSelection),
     TestCase("testSelectionMatchAcceptsExactSelection", testSelectionMatchAcceptsExactSelection),
-    TestCase("testSelectionMatchCatchesMismatch", testSelectionMatchCatchesMismatch)
+    TestCase("testSelectionMatchCatchesMismatch", testSelectionMatchCatchesMismatch),
+    TestCase("testReplaceRefusesEmptyReplacement", testReplaceRefusesEmptyReplacement)
 ]

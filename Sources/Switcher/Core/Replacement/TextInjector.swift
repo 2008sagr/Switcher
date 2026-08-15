@@ -99,6 +99,18 @@ public final class TextInjector {
     /// Синхронный. Вызывать только с фоновой очереди: внутри AX-вызовы.
     @discardableResult
     public func replace(_ request: ReplacementRequest) -> Bool {
+        // Находка 4 (финальное ревью): SwitchDictionary.addCorrection
+        // отбрасывает пустую замену при добавлении через интерфейс
+        // настроек, но файл ~/.switcher/dictionary.json спроектирован для
+        // ручного редактирования, а SwitchDictionary.load() декодирует его
+        // без валидации. Пустая замена, вписанная вручную, дошла бы сюда
+        // как replacement: "" — и ни одна из четырёх стратегий не откажет
+        // сама по себе (все они сверяют ИСХОДНЫЙ текст под кареткой, а не
+        // непустоту замены), так что слово было бы тихо удалено. Guard —
+        // последняя линия защиты, до перебора стратегий и любых системных
+        // вызовов.
+        guard !request.replacement.isEmpty else { return false }
+
         let order: [InjectionStrategy]
         if let cached = strategy(for: request.bundleID) {
             order = [cached] + InjectionStrategy.allCases.filter { $0 != cached }
