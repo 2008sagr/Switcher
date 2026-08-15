@@ -235,6 +235,23 @@ public final class TextInjector {
 
     // MARK: - Стратегия C: выделение и одна вставка
 
+    /// Совпадает ли реально выделенное с ожидаемым «слово + хвост». Вынесено
+    /// в чистую функцию ради тестируемости (симметрично `planRange`):
+    /// `AXUIElement` — непрозрачный тип из чужого процесса, сконструировать
+    /// его в оффлайн-тесте нельзя, поэтому вся логика сравнения, которая
+    /// решает «доверять или нет» выделению, живёт отдельно от самого
+    /// AX-вызова, который её кормит. Используется и стратегией C, и
+    /// стратегией D (находка 3, финальное ревью) — раньше D не сверяла
+    /// вообще ничего.
+    ///
+    /// `nil` или пустая строка — значит выделение прочитать не удалось
+    /// (доступно на запись, но не на чтение, либо атрибут не отвечает):
+    /// раз сверить нечем, доверяем порядку доставки событий, как и раньше.
+    static func selectionMatchesExpectation(_ selected: String?, expected: String) -> Bool {
+        guard let selected, !selected.isEmpty else { return true }
+        return selected == expected
+    }
+
     private func replaceViaSelection(_ request: ReplacementRequest) -> Bool {
         if let element = ax.focusedElement(), ax.isSecure(element) { return false }
 
@@ -245,9 +262,8 @@ public final class TextInjector {
 
         // Читать выделение часто можно даже там, где писать в него нельзя.
         if let element = ax.focusedElement(),
-           let selected = ax.selectedText(element),
-           !selected.isEmpty,
-           selected != request.original + request.tail {
+           !Self.selectionMatchesExpectation(ax.selectedText(element),
+                                              expected: request.original + request.tail) {
             // Выделили не то — снять выделение и уйти.
             postKey(124, shift: false)  // kVK_RightArrow
             return false
@@ -275,7 +291,22 @@ public final class TextInjector {
         defer { guardian.restore() }
 
         let count = request.original.utf16.count + request.tail.utf16.count
-        for _ in 0..<count { postKey(123, shift: true) }
+        for _ in 0..<count { postKey(123, shift: true) }   // kVK_LeftArrow с Shift
+
+        // Сверка симметрично стратегии C (находка 3, финальное ревью):
+        // это последний резервный путь, то есть срабатывает ровно тогда,
+        // когда состояние наименее надёжно проверено — до этой правки
+        // Cmd+V нажимался сразу после выделения, без единой проверки,
+        // что выделено действительно ожидаемое слово.
+        if let element = ax.focusedElement(),
+           !Self.selectionMatchesExpectation(ax.selectedText(element),
+                                              expected: request.original + request.tail) {
+            // Выделили не то — снять выделение и уйти, буфер обмена
+            // восстановится через defer выше, вставки не будет.
+            postKey(124, shift: false)  // kVK_RightArrow
+            return false
+        }
+
         postCommandKey(9)   // kVK_ANSI_V
 
         guard let element = ax.focusedElement(),

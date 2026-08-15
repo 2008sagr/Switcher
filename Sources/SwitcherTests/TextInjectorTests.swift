@@ -102,6 +102,29 @@ func testKeycodeReplayRefusesWithoutAX() throws {
                    "Без AX сверить нечем — отказ, а не слепой backspace по счётчику из снимка")
 }
 
+/// Находка 3 (финальное ревью): `replaceViaClipboard` (стратегия D) вставляла
+/// через Cmd+V сразу после выделения, без единой сверки — в отличие от
+/// стратегии C, которая сверяет `ax.selectedText(...)` перед печатью. Сверку
+/// вынесли в общую чистую функцию `selectionMatchesExpectation`, используемую
+/// теперь и C, и D. `AXUIElement` нельзя сконструировать в оффлайн-тесте
+/// (непрозрачный тип из чужого процесса), поэтому проверяем саму логику
+/// сравнения напрямую — то же самое разделение, что и у `planRange`.
+func testSelectionMatchTrustsUnreadableSelection() throws {
+    XCTAssertTrue(TextInjector.selectionMatchesExpectation(nil, expected: "ghbdtn "),
+                  "Выделение недоступно для чтения — доверяем порядку доставки событий, как раньше")
+    XCTAssertTrue(TextInjector.selectionMatchesExpectation("", expected: "ghbdtn "),
+                  "Пустая строка — тоже нечем сверить, тот же исход")
+}
+
+func testSelectionMatchAcceptsExactSelection() throws {
+    XCTAssertTrue(TextInjector.selectionMatchesExpectation("ghbdtn ", expected: "ghbdtn "))
+}
+
+func testSelectionMatchCatchesMismatch() throws {
+    XCTAssertFalse(TextInjector.selectionMatchesExpectation("wrong", expected: "ghbdtn "),
+                   "Выделили не то, что ожидалось, — сверка обязана поймать это до вставки")
+}
+
 let textInjectorTests: [TestCase] = [
     TestCase("testRangeCoversWordPlusTail", testRangeCoversWordPlusTail),
     TestCase("testRangeWithoutTail", testRangeWithoutTail),
@@ -111,5 +134,8 @@ let textInjectorTests: [TestCase] = [
     TestCase("testCacheStartsEmptyAndRecordsSuccess", testCacheStartsEmptyAndRecordsSuccess),
     TestCase("testFailureDemotesCachedStrategy", testFailureDemotesCachedStrategy),
     TestCase("testKeycodeReplayRefusesEmptyStrokes", testKeycodeReplayRefusesEmptyStrokes),
-    TestCase("testKeycodeReplayRefusesWithoutAX", testKeycodeReplayRefusesWithoutAX)
+    TestCase("testKeycodeReplayRefusesWithoutAX", testKeycodeReplayRefusesWithoutAX),
+    TestCase("testSelectionMatchTrustsUnreadableSelection", testSelectionMatchTrustsUnreadableSelection),
+    TestCase("testSelectionMatchAcceptsExactSelection", testSelectionMatchAcceptsExactSelection),
+    TestCase("testSelectionMatchCatchesMismatch", testSelectionMatchCatchesMismatch)
 ]
