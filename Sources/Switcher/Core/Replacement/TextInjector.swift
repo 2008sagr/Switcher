@@ -174,15 +174,38 @@ public final class TextInjector {
         // уровне вызывающего кода, который обязан передавать strokes.
         guard !request.strokes.isEmpty else { return false }
 
-        // Проверяем состояние, если AX доступен хотя бы на чтение.
-        if let element = ax.focusedElement() {
-            guard !ax.isSecure(element) else { return false }
-            if let caret = ax.caretLocation(element),
-               let plan = Self.planRange(caret: caret, request: request),
-               let actual = ax.string(element, location: plan.start, length: plan.verifyLength),
-               actual != request.original + request.tail {
-                return false
-            }
+        // Вторая линия защиты (финальное ревью, находка 1). Без AX сверить
+        // состояние нечем вообще: раньше это место молча пропускало
+        // проверку и шло прямиком к sendBackspaces(deleteCount) — то есть
+        // било вслепую по количеству символов, посчитанному из снимка
+        // буфера. Это ровно те приложения (терминалы), ради которых
+        // стратегия существует, и именно они получали удар первыми, если
+        // снимок оказывался устаревшим.
+        //
+        // Выбор — отказаться и уступить следующей стратегии, а не пытаться
+        // подтвердить состояние как-то иначе (например, эвристикой
+        // «буфер свежий» из спеки: не было мыши/смены фокуса, последнее
+        // нажатие недавно). Причины:
+        //   1. Принцип во всём файле один и тот же — «лучше не сработать,
+        //      чем испортить текст» (см. заголовок класса); отказ уже
+        //      закрывает опасность полностью, а не частично.
+        //   2. Альтернативная эвристика подтверждала бы состояние ДО
+        //      начала replaceViaKeycodeReplay, но не защищает от событий,
+        //      случившихся уже ВНУТРИ него, — включая до секунды ожидания
+        //      подтверждения смены раскладки чуть ниже. Ложное чувство
+        //      безопасности хуже честного отказа.
+        //   3. Отказ здесь не глушит замену совсем: strategy selectAndInject
+        //      и strategy clipboard идут следующими в порядке перебора
+        //      (TextInjector.replace()) и могут сработать в том же самом
+        //      приложении — пользователь в худшем случае не получает
+        //      исправления в этот раз, а не порченный текст.
+        guard let element = ax.focusedElement() else { return false }
+        guard !ax.isSecure(element) else { return false }
+        if let caret = ax.caretLocation(element),
+           let plan = Self.planRange(caret: caret, request: request),
+           let actual = ax.string(element, location: plan.start, length: plan.verifyLength),
+           actual != request.original + request.tail {
+            return false
         }
 
         // Раскладка меняется ПЕРЕД переигрыванием и подтверждается уведомлением,

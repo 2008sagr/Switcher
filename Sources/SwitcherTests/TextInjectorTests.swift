@@ -81,6 +81,27 @@ func testKeycodeReplayRefusesEmptyStrokes() throws {
                    "Пустые strokes — сигнал отказать до удаления текста, а не после")
 }
 
+/// Финальное ревью, находка 1, вторая линия защиты: если Accessibility
+/// недоступна вовсе (`ax.focusedElement() == nil`), сверить состояние нечем,
+/// и replaceViaKeycodeReplay обязан отказаться ДО sendBackspaces, а не бить
+/// по количеству символов из (возможно, устаревшего) снимка вслепую — именно
+/// это било терминалы, ради которых стратегия существует. В тестовом
+/// процессе нет GUI-окна с фокусом, поэтому `AXTextClient()` здесь и в
+/// testKeycodeReplayRefusesEmptyStrokes выше уже наблюдаемо возвращает nil
+/// из focusedElement() — тот же факт, на который опирается комментарий того
+/// теста. Строки non-empty специально, чтобы проверить именно НОВЫЙ guard,
+/// а не старый (находка 2 прошлого ревью, пустые strokes).
+func testKeycodeReplayRefusesWithoutAX() throws {
+    let injector = TextInjector(ax: AXTextClient(), onSwitchLayout: { _, done in done() })
+    let req = ReplacementRequest(
+        strokes: [KeyStroke(keyCode: 0, shift: false, char: "g")],
+        original: "ghbdtn", replacement: "привет",
+        tail: " ", targetLayout: .ru, bundleID: "com.example.app"
+    )
+    XCTAssertFalse(injector.replaceViaKeycodeReplay(req),
+                   "Без AX сверить нечем — отказ, а не слепой backspace по счётчику из снимка")
+}
+
 let textInjectorTests: [TestCase] = [
     TestCase("testRangeCoversWordPlusTail", testRangeCoversWordPlusTail),
     TestCase("testRangeWithoutTail", testRangeWithoutTail),
@@ -89,5 +110,6 @@ let textInjectorTests: [TestCase] = [
     TestCase("testStrategyOrderPrefersAXDirect", testStrategyOrderPrefersAXDirect),
     TestCase("testCacheStartsEmptyAndRecordsSuccess", testCacheStartsEmptyAndRecordsSuccess),
     TestCase("testFailureDemotesCachedStrategy", testFailureDemotesCachedStrategy),
-    TestCase("testKeycodeReplayRefusesEmptyStrokes", testKeycodeReplayRefusesEmptyStrokes)
+    TestCase("testKeycodeReplayRefusesEmptyStrokes", testKeycodeReplayRefusesEmptyStrokes),
+    TestCase("testKeycodeReplayRefusesWithoutAX", testKeycodeReplayRefusesWithoutAX)
 ]

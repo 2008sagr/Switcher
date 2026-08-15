@@ -328,6 +328,23 @@ public final class SwitchCoordinator: EventTapDelegate {
     /// Выполняется на `work`.
     private func apply(word: WordSnapshot, replacement: String, target: Layout,
                        bundleID: String, isCorrection: Bool) {
+        // Буфер сбрасываем СИНХРОННО здесь и сейчас — до вызова
+        // injector.replace(), а не после него (финальное ревью, находка 1).
+        // replace() может идти до секунды (replaceViaKeycodeReplay ждёт
+        // подтверждения смены раскладки через семафор), и всё это время тап
+        // продолжает слать новые нажатия на `state`. Если сбросить буфер
+        // только после replace(), поздняя state.async-задача сброса
+        // встанет в КОНЕЦ FIFO этой очереди и сотрёт уже накопленные
+        // нажатия следующего слова — терминалы без Accessibility теряют
+        // текст молча. `word` — уже самодостаточный value-снимок (COW), так
+        // что сброс живого буфера здесь ничего не отбирает у ТЕКУЩЕЙ
+        // замены: нажатия, которые придут, пока replace() ещё выполняется,
+        // накопятся как НОВОЕ слово — именно так оно и есть, пользователь
+        // печатает их уже после заменяемого. `.sync`, а не `.async`: нужна
+        // гарантия, что сброс уже случился до того, как начнётся долгая
+        // часть — иначе тот же порядок FIFO мог бы отложить его снова.
+        state.sync { [weak self] in self?.buffer.reset() }
+
         let request = ReplacementRequest(
             strokes: word.strokes, original: word.text, replacement: replacement,
             tail: word.tail, targetLayout: target, bundleID: bundleID
@@ -357,11 +374,9 @@ public final class SwitchCoordinator: EventTapDelegate {
             fromLanguage: target.opposite.rawValue, toLanguage: target.rawValue,
             timestamp: Date(), isCorrection: isCorrection, isDoubleShift: false
         )
-        // buffer и stateLastSwitch принадлежат state — мутируем их только там.
-        state.async { [weak self] in
-            self?.buffer.reset()
-            self?.stateLastSwitch = info
-        }
+        // stateLastSwitch принадлежит state — мутируем его только там.
+        // buffer сюда больше не входит: сброшен синхронно выше, до replace().
+        state.async { [weak self] in self?.stateLastSwitch = info }
         DispatchQueue.main.async { self.onSwitched?(info) }
     }
 
@@ -415,6 +430,18 @@ public final class SwitchCoordinator: EventTapDelegate {
         guard let info = stateLastSwitch, info.isUndoable else { return }
         stateLastSwitch = nil
         let bundleID = stateCurrentBundleID
+        // Буфер сбрасываем здесь же, синхронно, ДО отправки на `work` — не в
+        // конце finishUndo() (та же гонка, что и в apply(), находка 1:
+        // finishUndo → injector.replace() может идти до секунды, и поздний
+        // async-сброс из конца finishUndo() стирал бы нажатия следующего
+        // слова, накопившиеся за это время). В отличие от kickOffEvaluation
+        // (которая вызывается на каждый символ и не должна сбрасывать буфер
+        // впрок — иначе сломается непрерывное накопление префикса для early/
+        // pause), beginUndo — одноразовое решение по явному действию
+        // пользователя (двойной Shift): раз мы досюда дошли, отмена уже
+        // point of no return, и текущий буфер относится к тому, что
+        // печатается ПОСЛЕ отменяемого слова — самое время его обнулить.
+        buffer.reset()
         work.async { [weak self] in self?.finishUndo(info, bundleID: bundleID) }
     }
 
@@ -448,7 +475,9 @@ public final class SwitchCoordinator: EventTapDelegate {
             prior.forget(target)
         }
 
-        state.async { [weak self] in self?.buffer.reset() }
+        // buffer уже сброшен синхронно в beginUndo(), до отправки на work —
+        // здесь второй раз сбрасывать не нужно (и нельзя: это стёрло бы
+        // нажатия следующего слова, накопившиеся за время injector.replace()).
         DispatchQueue.main.async { self.onUndone?(info) }
     }
 }
