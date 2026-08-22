@@ -93,8 +93,42 @@ public final class ClipboardGuard {
 
         pasteboard.clearContents()
         let ok = pasteboard.setString(text, forType: .string)
-        changeCountAfterWrite = pasteboard.changeCount
-        return ok
+        if ok {
+            changeCountAfterWrite = pasteboard.changeCount
+            return true
+        }
+
+        // setString() не удалась, а clearContents() выше уже стёр буфер —
+        // если ничего не сделать, снимок пользователя (тот, что снят прямо
+        // сейчас, либо более ранним write() в этой же паре) теряется
+        // безвозвратно: вызывающий код при false просто выходит, не трогая
+        // guardian (см. apply() в SwitchCoordinator и replaceViaClipboard в
+        // TextInjector). Восстанавливаем снимок немедленно и возвращаем
+        // объект в чистое состояние — как будто write() не вызывался вовсе:
+        // snapshot и changeCountAfterWrite сбрасываются в nil так же, как
+        // после обычного restore(), значит последующий restore() будет
+        // no-op, а следующий write() снимет снимок заново. Сбрасывать
+        // changeCountAfterWrite обязательно и тогда, когда он остался от
+        // более раннего УСПЕШНОГО write() этой же пары (см. тест
+        // testClipboardGuardSecondWriteFailureLeavesCleanState) — иначе
+        // restore() посчитал бы, что есть что восстанавливать, хотя мы уже
+        // сделали это здесь.
+        writeBack(snapshot ?? [])
+        snapshot = nil
+        changeCountAfterWrite = nil
+        return false
+    }
+
+    /// Записывает сохранённые данные обратно в pasteboard. Общий хвост для
+    /// restore() и отката неудачной записи в write().
+    private func writeBack(_ saved: [[NSPasteboard.PasteboardType: Data]]) {
+        pasteboard.clearContents()
+        let items: [NSPasteboardItem] = saved.map { stored in
+            let item = NSPasteboardItem()
+            for (type, data) in stored { item.setData(data, forType: type) }
+            return item
+        }
+        if !items.isEmpty { pasteboard.writeObjects(items) }
     }
 
     /// `force: true` восстанавливает буфер безусловно, не сверяя changeCount.
@@ -117,12 +151,6 @@ public final class ClipboardGuard {
         // эту проверку (см. комментарий выше).
         guard force || pasteboard.changeCount == expected else { return }
 
-        pasteboard.clearContents()
-        let items: [NSPasteboardItem] = saved.map { stored in
-            let item = NSPasteboardItem()
-            for (type, data) in stored { item.setData(data, forType: type) }
-            return item
-        }
-        if !items.isEmpty { pasteboard.writeObjects(items) }
+        writeBack(saved)
     }
 }
