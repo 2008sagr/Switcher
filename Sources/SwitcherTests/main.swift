@@ -14,6 +14,7 @@ let suites: [(String, [TestCase])] = [
     ("ClipboardGuardTests", clipboardGuardTests),
     ("TextInjectorTests", textInjectorTests),
     ("CurrentLayoutCacheTests", currentLayoutCacheTests),
+    ("SelectionConverterTests", selectionConverterTests),
 ]
 
 exit(runSuites(suites, filter: filter))

@@ -51,15 +51,25 @@ public final class ClipboardGuard {
         return ok
     }
 
-    public func restore() {
+    /// `force: true` восстанавливает буфер безусловно, не сверяя changeCount.
+    ///
+    /// Обычная защита ниже («чужая запись важнее нашего восстановления»)
+    /// рассчитана на параллельное действие ПОЛЬЗОВАТЕЛЯ между write() и
+    /// restore(). Она неприменима, когда ожидаемое изменение между ними —
+    /// наш же собственный синтетический Cmd+C (SwitchCoordinator читает
+    /// выделение через буфер обмена, когда AX не отдаёт его напрямую): это
+    /// не чужая запись, которую нужно уважать, а наше же действие, которое
+    /// нужно убрать, вернув буфер к состоянию ДО него.
+    public func restore(force: Bool = false) {
         guard let expected = changeCountAfterWrite else { return }
         changeCountAfterWrite = nil
         let saved = snapshot ?? []
         snapshot = nil
 
         // Между нашей записью и восстановлением кто-то ещё писал в буфер —
-        // его данные важнее нашего восстановления.
-        guard pasteboard.changeCount == expected else { return }
+        // его данные важнее нашего восстановления. force: true пропускает
+        // эту проверку (см. комментарий выше).
+        guard force || pasteboard.changeCount == expected else { return }
 
         pasteboard.clearContents()
         let items: [NSPasteboardItem] = saved.map { stored in

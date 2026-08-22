@@ -102,6 +102,28 @@ func testStringPathCanDivergeFromStrokesPathOnReverseMappingCollision() throws {
                       mapper.transpose(strokes: strokeFromLosingKey, to: .ru))
 }
 
+/// Мягкий режим (для конвертации выделения, не автозамены): отображаемые
+/// символы конвертируются, всё остальное — пробелы, цифры, перевод строки,
+/// знаки — проходит насквозь без изменений. Регистр сохраняется так же, как
+/// и в строгом transpose: заглавная и строчная формы — отдельные записи в
+/// таблице (см. testPreservesCase).
+func testSoftTransposeConvertsMappedLettersAndPassesRestThrough() throws {
+    let enMap: [UInt32: Character] = [UInt32(12) << 1: "q", (UInt32(12) << 1 | 1): "Q"]
+    let ruMap: [UInt32: Character] = [UInt32(12) << 1: "й", (UInt32(12) << 1 | 1): "Й"]
+    let mapper = LayoutMapper(tables: [.en: KeyboardLayoutTable(map: enMap),
+                                       .ru: KeyboardLayoutTable(map: ruMap)])
+    XCTAssertEqual(mapper.transposeSoft("Q q 123\nq!", from: .en, to: .ru), "Й й 123\nй!")
+}
+
+/// Ключевое отличие от строгого transpose(_:from:to:): там неотображаемый
+/// символ отменяет ВСЮ конверсию (nil). Здесь — нет, потому что выделение
+/// пользователя почти всегда содержит то, чего нет ни в одной раскладке.
+func testSoftTransposePassesThroughUnmappableCharactersInsteadOfFailing() throws {
+    let mapper = LayoutMapper(tables: [.en: KeyboardLayoutTable(map: [:]),
+                                       .ru: KeyboardLayoutTable(map: [:])])
+    XCTAssertEqual(mapper.transposeSoft("abc 123", from: .en, to: .ru), "abc 123")
+}
+
 let layoutMapperTests: [TestCase] = [
     TestCase("testTransposesLettersOnRussianPC", testTransposesLettersOnRussianPC),
     TestCase("testTransposesPunctuationPositionedLetters", testTransposesPunctuationPositionedLetters),
@@ -110,5 +132,9 @@ let layoutMapperTests: [TestCase] = [
     TestCase("testDigitsAndHyphenPassThrough", testDigitsAndHyphenPassThrough),
     TestCase("testTransposesStrokes", testTransposesStrokes),
     TestCase("testStringPathCanDivergeFromStrokesPathOnReverseMappingCollision",
-             testStringPathCanDivergeFromStrokesPathOnReverseMappingCollision)
+             testStringPathCanDivergeFromStrokesPathOnReverseMappingCollision),
+    TestCase("testSoftTransposeConvertsMappedLettersAndPassesRestThrough",
+             testSoftTransposeConvertsMappedLettersAndPassesRestThrough),
+    TestCase("testSoftTransposePassesThroughUnmappableCharactersInsteadOfFailing",
+             testSoftTransposePassesThroughUnmappableCharactersInsteadOfFailing)
 ]

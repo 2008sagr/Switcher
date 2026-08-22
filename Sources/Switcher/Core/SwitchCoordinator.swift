@@ -64,6 +64,15 @@ public final class SwitchCoordinator: EventTapDelegate {
             state.async { [weak self] in self?.stateDoubleShiftEnabled = value }
         }
     }
+    /// Принудительная конвертация ВЫДЕЛЕННОГО текста по двойному Shift.
+    /// Зависит от doubleShiftEnabled: если сам двойной Shift выключен, эта
+    /// настройка не читается вовсе — см. handleModifier(_:).
+    public var convertSelectionEnabled = true {
+        didSet {
+            let value = convertSelectionEnabled
+            state.async { [weak self] in self?.stateConvertSelectionEnabled = value }
+        }
+    }
     public var minWordLength = 4 {
         didSet {
             let value = minWordLength
@@ -129,6 +138,7 @@ public final class SwitchCoordinator: EventTapDelegate {
     private var stateGuards = GuardRules()
     private var stateAutoSwitchEnabled = true
     private var stateDoubleShiftEnabled = true
+    private var stateConvertSelectionEnabled = true
     private var stateMinWordLength = 4
     private var stateCorrections: [String: String] = [:]
     private var stateCurrentBundleID = ""
@@ -461,18 +471,150 @@ public final class SwitchCoordinator: EventTapDelegate {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { finish() }
     }
 
-    // MARK: - Двойной Shift: отмена
+    // MARK: - Двойной Shift: конвертация выделения или отмена
 
     /// Выполняется на `state` (вызывается из handle(_:)) — читать и писать
     /// lastShiftTime/stateLastSwitch здесь безопасно без доп. синхронизации.
+    ///
+    /// convertSelectionEnabled читается ТОЛЬКО внутри этого guard'а, за
+    /// stateDoubleShiftEnabled — так зависимость "нет двойного Shift — нет и
+    /// конвертации выделения" выполняется сама собой, без отдельной проверки.
     private func handleModifier(_ keyCode: CGKeyCode) {
         guard stateDoubleShiftEnabled, keyCode == 56 || keyCode == 60 else { return }
         let now = Date().timeIntervalSince1970
         if now - lastShiftTime < doubleShiftInterval {
             lastShiftTime = 0
-            beginUndo()
+            handleDoubleShift()
         } else {
             lastShiftTime = now
+        }
+    }
+
+    /// Выполняется на `state`. Ветвление "есть выделение → конвертировать,
+    /// нет → отменить последнюю замену" требует знать, есть ли реальное
+    /// выделение — а это чтение через AX, блокирующий ввод-вывод, которому
+    /// на `state` не место (см. заголовок класса). Поэтому здесь только
+    /// дешёвая синхронная проверка настройки и списка исключённых приложений
+    /// (оба уже в памяти state), а решение "есть ли выделение" и сама
+    /// конвертация уходят на `work`.
+    private func handleDoubleShift() {
+        guard stateConvertSelectionEnabled else { beginUndo(); return }
+        let bundleID = stateCurrentBundleID
+        guard !stateGuards.excludedApps.contains(bundleID) else { beginUndo(); return }
+        work.async { [weak self] in self?.handleDoubleShiftOnWork() }
+    }
+
+    /// Выполняется на `work`. Единственное место, где двойной Shift читает
+    /// AX/буфер обмена. Если выделения, пригодного для конвертации, нет —
+    /// это не ошибка, а сигнал вернуться к прежнему поведению (отмена),
+    /// поэтому решение уходит обратно на `state`, владелец stateLastSwitch.
+    ///
+    /// self.mapper читается здесь без дополнительной синхронизации: он
+    /// выставляется один раз в rebuildLayoutTables(), вызванном только из
+    /// init() (на main, до start()), и больше никогда не мутируется — как и
+    /// self.detector, который по той же причине уже читается с `state`
+    /// (см. kickOffEvaluation) и work (см. evaluate()).
+    private func handleDoubleShiftOnWork() {
+        guard let mapper,
+              let (element, text) = readSelection(),
+              let plan = SelectionConverter.plan(for: text, mapper: mapper)
+        else {
+            state.async { [weak self] in self?.beginUndo() }
+            return
+        }
+        applySelectionConversion(element: element, plan: plan)
+    }
+
+    /// Читает текущее выделение. Секретное поле отсекается здесь же, до
+    /// чтения содержимого. Порядок источников: сначала `kAXSelectedTextAttribute`
+    /// напрямую — быстро и не трогает буфер обмена пользователя; если AX не
+    /// отдал текст (не все приложения реализуют этот атрибут на чтение) —
+    /// запасной путь через Cmd+C и системный буфер.
+    private func readSelection() -> (element: AXUIElement, text: String)? {
+        guard let element = ax.focusedElement(), !ax.isSecure(element) else { return nil }
+        if let text = ax.selectedText(element), !text.isEmpty {
+            return (element, text)
+        }
+        guard let text = readSelectionViaClipboard(), !text.isEmpty else { return nil }
+        return (element, text)
+    }
+
+    /// Cmd+C и чтение системного буфера — резерв для приложений, где
+    /// выделение недоступно на чтение через AX напрямую.
+    ///
+    /// ClipboardGuard.write("") снимает исходное содержимое буфера ДО
+    /// отправки Cmd+C (пустая строка — чтобы, если Cmd+C не сработает вовсе,
+    /// в буфере не оказалось случайного старого текста, который мы бы
+    /// приняли за выделение). Восстановление ниже — `force: true`: обычная
+    /// защита ClipboardGuard.restore() ("чужая запись важнее") здесь
+    /// неприменима, потому что "чужая" запись между write() и restore() —
+    /// это наш же синтетический Cmd+C, а не параллельное действие
+    /// пользователя (см. комментарий у restore(force:) в ClipboardGuard).
+    private func readSelectionViaClipboard() -> String? {
+        let pasteboard = NSPasteboard.general
+        let guardian = ClipboardGuard(pasteboard: pasteboard)
+        guard guardian.write("") else { return nil }
+        let before = pasteboard.changeCount
+
+        postCommandKey(CGKeyCode(kVK_ANSI_C))
+
+        let deadline = Date().addingTimeInterval(0.3)
+        while pasteboard.changeCount == before, Date() < deadline {
+            Thread.sleep(forTimeInterval: 0.01)
+        }
+        let text = pasteboard.changeCount != before ? pasteboard.string(forType: .string) : nil
+        guardian.restore(force: true)
+        return text
+    }
+
+    /// Выполняется на `work`. Записывает результат конвертации на место
+    /// выделения и переключает системную раскладку на целевую.
+    ///
+    /// ОТМЕНА ЭТОЙ ОПЕРАЦИИ НЕ РЕГИСТРИРУЕТСЯ — stateLastSwitch намеренно не
+    /// трогается. Причина принципиальная, не лень: beginUndo()/finishUndo()
+    /// устроены вокруг "слова перед кареткой" и переигрывают ЗАПИСАННЫЕ
+    /// нажатия клавиш (info.strokes) — а у произвольного выделения текста
+    /// нажатий нет и быть не может, strokes пришлось бы передать пустым
+    /// массивом. Ровно на пустом массиве нажатий недавно был дефект с
+    /// БЕССЛЕДНОЙ ПОТЕРЕЙ ТЕКСТА в терминале (см. историю коммитов на эту
+    /// тему) — повторять эту конструкцию здесь означало бы намеренно
+    /// воссоздать тот же класс дефекта. Обратная операция всё равно доступна
+    /// пользователю другим путём: результат уже выделен на месте исходного
+    /// текста — выдели его и нажми двойной Shift ещё раз: direction(for:)
+    /// определит направление по новому доминирующему алфавиту и вернёт
+    /// исходный текст сам, без отдельного механизма отмены.
+    private func applySelectionConversion(element: AXUIElement,
+                                          plan: (target: Layout, converted: String)) {
+        var wrote = ax.replaceSelection(element, with: plan.converted)
+        if !wrote {
+            // AX отказал на запись — тот же запасной путь, что и у стратегии
+            // D в TextInjector: свой буфер обмена, Cmd+V, восстановление.
+            let guardian = ClipboardGuard()
+            if guardian.write(plan.converted) {
+                postCommandKey(CGKeyCode(kVK_ANSI_V))
+                guardian.restore()
+                wrote = true
+            }
+        }
+        // Раскладку переключаем только если текст реально записан — иначе
+        // пользователь получит смену раскладки без видимого эффекта.
+        guard wrote else { return }
+        switchLayout(to: plan.target, completion: {})
+    }
+
+    /// Cmd+<keyCode> через общий источник инжекта (EventTapController.injectSource) —
+    /// тот же источник, что использует TextInjector для Cmd+V в стратегии D.
+    /// Событие помечено как синтетическое (syntheticMarker), поэтому тап его
+    /// не увидит и не запустит каскад повторных срабатываний.
+    private func postCommandKey(_ keyCode: CGKeyCode) {
+        let source = EventTapController.injectSource
+        if let down = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: true) {
+            down.flags = .maskCommand
+            down.post(tap: .cgAnnotatedSessionEventTap)
+        }
+        if let up = CGEvent(keyboardEventSource: source, virtualKey: keyCode, keyDown: false) {
+            up.flags = .maskCommand
+            up.post(tap: .cgAnnotatedSessionEventTap)
         }
     }
 

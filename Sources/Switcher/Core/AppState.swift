@@ -34,6 +34,16 @@ public class AppState: ObservableObject {
         }
     }
 
+    /// Принудительная конвертация выделенного текста по двойному Shift.
+    /// Зависит от doubleShiftEnabled — при выключенном двойном Shift не
+    /// работает, engine сам это учитывает (см. SwitchCoordinator.handleModifier).
+    @Published public var convertSelectionEnabled: Bool {
+        didSet {
+            UserDefaults.standard.set(convertSelectionEnabled, forKey: "convertSelectionEnabled")
+            engine.convertSelectionEnabled = convertSelectionEnabled
+        }
+    }
+
     @Published public var minWordLength: Int {
         didSet {
             UserDefaults.standard.set(minWordLength, forKey: "minWordLength")
@@ -135,6 +145,7 @@ public class AppState: ObservableObject {
         isEnabled            = UserDefaults.standard.object(forKey: "isEnabled")           as? Bool ?? true
         autoSwitchEnabled    = UserDefaults.standard.object(forKey: "autoSwitchEnabled")   as? Bool ?? true
         doubleShiftEnabled   = UserDefaults.standard.object(forKey: "doubleShiftEnabled")  as? Bool ?? true
+        convertSelectionEnabled = UserDefaults.standard.object(forKey: "convertSelectionEnabled") as? Bool ?? true
         minWordLength        = UserDefaults.standard.object(forKey: "minWordLength")       as? Int  ?? 4
         launchAtLoginEnabled = SMAppService.mainApp.status == .enabled
         dictionary           = savedDict
@@ -142,6 +153,7 @@ public class AppState: ObservableObject {
         engine = SwitchCoordinator()
         engine.autoSwitchEnabled  = autoSwitchEnabled
         engine.doubleShiftEnabled = doubleShiftEnabled
+        engine.convertSelectionEnabled = convertSelectionEnabled
         engine.minWordLength      = minWordLength
         engine.exclusions         = savedDict.exceptionsSet
         engine.excludedApps       = savedDict.excludedAppsSet

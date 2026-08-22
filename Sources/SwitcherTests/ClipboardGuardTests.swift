@@ -152,6 +152,30 @@ func testClipboardGuardPreservesMultipleItems() throws {
     XCTAssertEqual(pasteboard.pasteboardItems?.last?.string(forType: .string), "второй")
 }
 
+/// `force: true` нужен конвертации выделения по двойному Shift: там
+/// "чужая" запись между write() и restore() — это наш же синтетический
+/// Cmd+C (SwitchCoordinator читает выделение через буфер, когда AX не
+/// отдаёт его напрямую), а не параллельное действие пользователя, которое
+/// в обычном restore() нужно уважать и не перетирать.
+func testClipboardGuardForceRestoreOverridesForeignWrite() throws {
+    let pasteboard = makeTestPasteboard()
+    defer { pasteboard.releaseGlobally() }
+
+    pasteboard.clearContents()
+    pasteboard.setString("исходное", forType: .string)
+
+    let guardian = ClipboardGuard(pasteboard: pasteboard)
+    XCTAssertTrue(guardian.write(""))
+
+    // Синтетический Cmd+C поверх нашей записи.
+    pasteboard.clearContents()
+    pasteboard.setString("скопированное выделение", forType: .string)
+
+    guardian.restore(force: true)
+    XCTAssertEqual(pasteboard.string(forType: .string), "исходное",
+                   "force:true обязан восстановить буфер, даже если changeCount не совпал")
+}
+
 let clipboardGuardTests: [TestCase] = [
     TestCase("testClipboardGuardRestoresPreviousText", testClipboardGuardRestoresPreviousText),
     TestCase("testClipboardGuardDoesNotClobberContentWrittenBySomeoneElse", testClipboardGuardDoesNotClobberContentWrittenBySomeoneElse),
@@ -160,5 +184,6 @@ let clipboardGuardTests: [TestCase] = [
     TestCase("testClipboardGuardSecondWriteWithoutRestorePreservesOriginal", testClipboardGuardSecondWriteWithoutRestorePreservesOriginal),
     TestCase("testClipboardGuardRepeatedRestoreAfterWriteIsSafe", testClipboardGuardRepeatedRestoreAfterWriteIsSafe),
     TestCase("testClipboardGuardPreservesMultipleTypesOnSingleItem", testClipboardGuardPreservesMultipleTypesOnSingleItem),
-    TestCase("testClipboardGuardPreservesMultipleItems", testClipboardGuardPreservesMultipleItems)
+    TestCase("testClipboardGuardPreservesMultipleItems", testClipboardGuardPreservesMultipleItems),
+    TestCase("testClipboardGuardForceRestoreOverridesForeignWrite", testClipboardGuardForceRestoreOverridesForeignWrite)
 ]
