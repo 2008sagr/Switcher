@@ -176,6 +176,61 @@ func testClipboardGuardForceRestoreOverridesForeignWrite() throws {
                    "force:true обязан восстановить буфер, даже если changeCount не совпал")
 }
 
+/// Дефект (два места — SwitchCoordinator.applySelectionConversion и
+/// TextInjector.replaceViaClipboard): восстановление буфера обмена
+/// синхронно сразу после постинга Cmd+V опережало обработку этого события
+/// целевым приложением, и вставлялось исходное содержимое буфера, а не
+/// конвертированный текст. Здесь проверяем сам примитив (scheduleRestore),
+/// а не места его использования — CGEvent/AX/TIS тесты в этом проекте
+/// запрещены.
+func testClipboardGuardScheduleRestoreIsAsyncAndDelayed() throws {
+    let pasteboard = makeTestPasteboard()
+    defer { pasteboard.releaseGlobally() }
+
+    pasteboard.clearContents()
+    pasteboard.setString("исходное", forType: .string)
+
+    let guardian = ClipboardGuard(pasteboard: pasteboard)
+    XCTAssertTrue(guardian.write("вставленное"))
+
+    guardian.scheduleRestore(after: 0.1)
+
+    // Сразу после вызова буфер ещё не восстановлен: restore() ушёл в
+    // отложенный блок на отдельной очереди, а не выполнился синхронно тут же.
+    XCTAssertEqual(pasteboard.string(forType: .string), "вставленное",
+                   "scheduleRestore обязан быть асинхронным — не восстанавливать раньше срока")
+
+    Thread.sleep(forTimeInterval: 0.3)
+    XCTAssertEqual(pasteboard.string(forType: .string), "исходное",
+                   "После истечения задержки буфер обязан восстановиться")
+}
+
+/// Отложенное восстановление обязано сверять changeCount точно так же, как
+/// немедленное: если пользователь успел скопировать что-то своё за время
+/// ожидания, восстановление не должно перетереть его запись.
+func testClipboardGuardScheduleRestoreStillRespectsChangeCount() throws {
+    let pasteboard = makeTestPasteboard()
+    defer { pasteboard.releaseGlobally() }
+
+    pasteboard.clearContents()
+    pasteboard.setString("старое", forType: .string)
+
+    let guardian = ClipboardGuard(pasteboard: pasteboard)
+    XCTAssertTrue(guardian.write("вставленное"))
+
+    guardian.scheduleRestore(after: 0.1)
+
+    // Пользователь копирует что-то своё ДО того, как отложенное
+    // восстановление успевает сработать.
+    Thread.sleep(forTimeInterval: 0.02)
+    pasteboard.clearContents()
+    pasteboard.setString("пользователь скопировал", forType: .string)
+
+    Thread.sleep(forTimeInterval: 0.3)
+    XCTAssertEqual(pasteboard.string(forType: .string), "пользователь скопировал",
+                   "Отложенное восстановление обязано уважать чужую запись так же, как немедленное")
+}
+
 let clipboardGuardTests: [TestCase] = [
     TestCase("testClipboardGuardRestoresPreviousText", testClipboardGuardRestoresPreviousText),
     TestCase("testClipboardGuardDoesNotClobberContentWrittenBySomeoneElse", testClipboardGuardDoesNotClobberContentWrittenBySomeoneElse),
@@ -185,5 +240,7 @@ let clipboardGuardTests: [TestCase] = [
     TestCase("testClipboardGuardRepeatedRestoreAfterWriteIsSafe", testClipboardGuardRepeatedRestoreAfterWriteIsSafe),
     TestCase("testClipboardGuardPreservesMultipleTypesOnSingleItem", testClipboardGuardPreservesMultipleTypesOnSingleItem),
     TestCase("testClipboardGuardPreservesMultipleItems", testClipboardGuardPreservesMultipleItems),
-    TestCase("testClipboardGuardForceRestoreOverridesForeignWrite", testClipboardGuardForceRestoreOverridesForeignWrite)
+    TestCase("testClipboardGuardForceRestoreOverridesForeignWrite", testClipboardGuardForceRestoreOverridesForeignWrite),
+    TestCase("testClipboardGuardScheduleRestoreIsAsyncAndDelayed", testClipboardGuardScheduleRestoreIsAsyncAndDelayed),
+    TestCase("testClipboardGuardScheduleRestoreStillRespectsChangeCount", testClipboardGuardScheduleRestoreStillRespectsChangeCount)
 ]

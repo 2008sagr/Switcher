@@ -404,9 +404,10 @@ public final class TextInjector {
 
         let guardian = ClipboardGuard()
         // Запись в СВОЙ буфер обмена не трогает текст целевого приложения —
-        // отказ здесь по-прежнему .notApplicable.
+        // отказ здесь по-прежнему .notApplicable. defer здесь намеренно НЕ
+        // используется (в отличие от прежней версии) — восстановление до и
+        // после Cmd+V должно вести себя по-разному, см. ниже по функции.
         guard guardian.write(request.replacement + request.tail) else { return .notApplicable }
-        defer { guardian.restore() }
 
         let count = request.original.utf16.count + request.tail.utf16.count
         for _ in 0..<count { postKey(123, shift: true) }   // kVK_LeftArrow с Shift
@@ -418,14 +419,30 @@ public final class TextInjector {
         if let element = ax.focusedElement(),
            !Self.selectionMatchesExpectation(ax.selectedText(element),
                                               expected: request.original + request.tail) {
-            // Выделили не то — снять выделение и уйти, буфер обмена
-            // восстановится через defer выше, вставки не будет.
+            // Выделили не то — снять выделение и уйти. Cmd+V ещё не
+            // отправлен, приложению нечего было прочитать из буфера —
+            // восстановить можно немедленно, синхронно, задержка тут не
+            // нужна (см. doc-комментарий у ClipboardGuard.scheduleRestore
+            // про то, от чего вообще зависит задержка).
             postKey(124, shift: false)  // kVK_RightArrow
+            guardian.restore()
             return .notApplicable
         }
 
         // Точка невозврата: Cmd+V вставляет буфер обмена в приложение.
         postCommandKey(9)   // kVK_ANSI_V
+
+        // Cmd+V — синтетическое событие: оно встаёт в очередь событий и
+        // обрабатывается целевым приложением АСИНХРОННО, позже этой строки.
+        // Немедленное restore() (как было раньше, через defer) в среднем
+        // успевало сработать раньше, чем приложение читало буфер — то есть
+        // раньше, чем Cmd+V фактически что-либо вставлял, и в приложение
+        // попадало исходное содержимое буфера, а не конвертированный текст.
+        // Это ровно те приложения (терминалы без Accessibility), ради
+        // которых стратегия D вообще существует. scheduleRestore()
+        // откладывает restore() на отдельную очередь и не блокирует эту —
+        // пост-проверка ниже выполняется сразу же, не дожидаясь его.
+        guardian.scheduleRestore()
 
         guard let element = ax.focusedElement(),
               let caret = ax.caretLocation(element) else { return .mutatedUnverified }

@@ -522,7 +522,7 @@ public final class SwitchCoordinator: EventTapDelegate {
             state.async { [weak self] in self?.beginUndo() }
             return
         }
-        applySelectionConversion(element: element, plan: plan)
+        applySelectionConversion(element: element, original: text, plan: plan)
     }
 
     /// Читает текущее выделение. Секретное поле отсекается здесь же, до
@@ -583,16 +583,54 @@ public final class SwitchCoordinator: EventTapDelegate {
     /// текста — выдели его и нажми двойной Shift ещё раз: direction(for:)
     /// определит направление по новому доминирующему алфавиту и вернёт
     /// исходный текст сам, без отдельного механизма отмены.
-    private func applySelectionConversion(element: AXUIElement,
+    private func applySelectionConversion(element: AXUIElement, original: String,
                                           plan: (target: Layout, converted: String)) {
-        var wrote = ax.replaceSelection(element, with: plan.converted)
+        // Сверка перед AX-мутацией (принцип «лучше не сработать, чем
+        // испортить чужой текст» — как и у всех остальных путей замены).
+        // Между чтением выделения в readSelection() и этим моментом прошло
+        // время работы SelectionConverter.plan() — не блокирующее, но и не
+        // нулевое: за него пользователь мог кликнуть мышью и сдвинуть
+        // выделение. Если сейчас выделено явно ДРУГОЕ — AX не трогаем вовсе
+        // и падаем в запасной путь ниже, как если бы AX отказал сам.
+        //
+        // selectionMatchesExpectation (тот же helper, что и у стратегий C/D
+        // в TextInjector) трактует nil/пустую строку как «сверить нечем —
+        // доверяем порядку доставки», а не как несовпадение: на элементах,
+        // где AX вообще не поддерживает чтение kAXSelectedTextAttribute (но
+        // может поддерживать запись — это разные атрибуты одного имени),
+        // такая проверка не должна блокировать AX-путь, который иначе
+        // прекрасно работал бы.
+        var wrote = false
+        if TextInjector.selectionMatchesExpectation(ax.selectedText(element), expected: original) {
+            wrote = ax.replaceSelection(element, with: plan.converted)
+        }
         if !wrote {
-            // AX отказал на запись — тот же запасной путь, что и у стратегии
-            // D в TextInjector: свой буфер обмена, Cmd+V, восстановление.
+            // AX отказал на запись (или выделение уже не то, что мы
+            // конвертировали) — тот же запасной путь, что и у стратегии D в
+            // TextInjector: свой буфер обмена, Cmd+V, восстановление.
+            //
+            // Сверки выделения перед Cmd+V здесь НЕТ и быть не может: если
+            // readSelection() добрался до этого текста через
+            // readSelectionViaClipboard() (см. её doc-комментарий), то это
+            // произошло именно потому, что AX не отдаёт
+            // kAXSelectedTextAttribute на чтение для этого элемента вовсе —
+            // сверить «то же самое ли сейчас выделение» через AX в таком
+            // случае буквально нечем. Это осознанное ограничение запасного
+            // пути, а не недосмотр.
             let guardian = ClipboardGuard()
             if guardian.write(plan.converted) {
                 postCommandKey(CGKeyCode(kVK_ANSI_V))
-                guardian.restore()
+                // Cmd+V — синтетическое событие, обрабатывается приложением
+                // позже этой строки, а не сразу. Немедленное restore() (как
+                // было раньше) в среднем успевало сработать раньше, чем
+                // приложение читало буфер, — восстанавливая в буфере
+                // исходное содержимое пользователя ДО того, как Cmd+V успел
+                // его прочитать, и приложение вставляло не конвертированный
+                // текст, а то, что лежало в буфере до нас. См.
+                // doc-комментарий у ClipboardGuard.scheduleRestore: это не
+                // задержка на пути замены (сама вставка от неё не зависит),
+                // а асинхронная уборка после неё, не блокирующая `work`.
+                guardian.scheduleRestore()
                 wrote = true
             }
         }
