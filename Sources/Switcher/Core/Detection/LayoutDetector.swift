@@ -218,24 +218,32 @@ public final class LayoutDetector {
     /// Насколько правдоподобнее слово выглядит в противоположной раскладке.
     /// Положительное значение — в пользу конверсии. `nil`, если хотя бы одна
     /// сторона не оценивается. `internal` ради калибровочного теста.
+    ///
+    /// Считает той же формулой, что и `evaluate()` — `meanLogProbBySegments`,
+    /// а не `meanLogProb`. До этого метод существовал только для
+    /// `testPrintThresholdSweep`, и sweep измерял устаревшую формулу: после
+    /// перехода `evaluate()` на посегментную оценку (см. doc-комментарий у
+    /// `DetectorThresholds.calibrated`) эти два метода на неё переведены не
+    /// были, и инструмент подбора порогов молча мерил не то, что решает
+    /// продакшен-код.
     func delta(word: String, currentLayout: Layout, terminated: Bool) -> Double? {
         let target = currentLayout.opposite
         guard let currentModel = models[currentLayout],
               let targetModel  = models[target],
               let converted    = mapper.transpose(word, from: currentLayout, to: target),
-              let currentScore = currentModel.meanLogProb(word, terminated: terminated),
-              let targetScore  = targetModel.meanLogProb(converted, terminated: terminated)
+              let currentScore = currentModel.meanLogProbBySegments(word, terminated: terminated),
+              let targetScore  = targetModel.meanLogProbBySegments(converted, terminated: terminated)
         else { return nil }
         return targetScore - currentScore
     }
 
     /// Абсолютная оценка слова в целевом языке после транспонирования.
-    /// `internal` ради калибровочного теста.
+    /// `internal` ради калибровочного теста. Формула — см. комментарий у `delta` выше.
     func targetScore(word: String, currentLayout: Layout, terminated: Bool) -> Double? {
         let target = currentLayout.opposite
         guard let targetModel = models[target],
               let converted = mapper.transpose(word, from: currentLayout, to: target)
         else { return nil }
-        return targetModel.meanLogProb(converted, terminated: terminated)
+        return targetModel.meanLogProbBySegments(converted, terminated: terminated)
     }
 }
