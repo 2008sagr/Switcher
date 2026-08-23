@@ -109,6 +109,28 @@ func testInternalPunctuationKeepsWordUnscorable() throws {
     }
 }
 
+/// Посегментная оценка чинит слова с внутренней пунктуацией: адрес сайта
+/// "yandex.ru" (полученный конверсией "нфтвучюкг") не оценивался вовсе
+/// старым meanLogProb (точка внутри слова — guard по алфавиту), из-за чего
+/// LayoutDetector выходил на .keep, даже не дойдя до сравнения раскладок.
+/// meanLogProbBySegments делит слово по неалфавитным символам и оценивает
+/// куски по отдельности.
+func testSegmentedScoringHandlesInternalPunctuation() throws {
+    let en = try TrigramModel.bundled(.en)
+    XCTAssertNotNil(en.meanLogProbBySegments("yandex.ru", terminated: true),
+                    "«yandex.ru»: сегменты «yandex» и «ru» длиной ≥2, слово должно оцениваться")
+    XCTAssertNotNil(en.meanLogProbBySegments("hello.", terminated: true),
+                    "«hello.»: точка на границе, единственный сегмент «hello»")
+}
+
+/// Ни один сегмент короче двух символов не даёт статистики — деление на
+/// пустой вес должно возвращать nil, а не падать и не подставлять 0.
+func testSegmentedScoringReturnsNilWhenNoSegmentReachesMinimumLength() throws {
+    let en = try TrigramModel.bundled(.en)
+    XCTAssertNil(en.meanLogProbBySegments("a.b", terminated: true),
+                "«a.b»: оба сегмента («a», «b») короче двух символов")
+}
+
 let trigramModelTests: [TestCase] = [
     TestCase("testLoadsBundledModels", testLoadsBundledModels),
     TestCase("testRealWordScoresHigherThanGibberish", testRealWordScoresHigherThanGibberish),
@@ -121,5 +143,7 @@ let trigramModelTests: [TestCase] = [
     TestCase("testRejectsOversizedAlphabetWithoutCrashing", testRejectsOversizedAlphabetWithoutCrashing),
     TestCase("testRejectsTruncatedData", testRejectsTruncatedData),
     TestCase("testTrimsBoundaryPunctuation", testTrimsBoundaryPunctuation),
-    TestCase("testInternalPunctuationKeepsWordUnscorable", testInternalPunctuationKeepsWordUnscorable)
+    TestCase("testInternalPunctuationKeepsWordUnscorable", testInternalPunctuationKeepsWordUnscorable),
+    TestCase("testSegmentedScoringHandlesInternalPunctuation", testSegmentedScoringHandlesInternalPunctuation),
+    TestCase("testSegmentedScoringReturnsNilWhenNoSegmentReachesMinimumLength", testSegmentedScoringReturnsNilWhenNoSegmentReachesMinimumLength)
 ]

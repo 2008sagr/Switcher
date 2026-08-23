@@ -109,4 +109,50 @@ public final class TrigramModel {
         }
         return total / Double(count)
     }
+
+    /// Посегментная оценка слова: то же самое `meanLogProb`, но применённое
+    /// по частям, если внутри слова есть символы вне алфавита.
+    ///
+    /// `meanLogProb` выше специально возвращает `nil` при ЛЮБОМ внутреннем
+    /// символе вне алфавита — это часть его контракта (см. doc-комментарий
+    /// там), на нём держится ветка `absoluteTarget` у `LayoutDetector`, и его
+    /// менять нельзя. Но этот же guard делает неоцениваемым целый класс
+    /// реальных слов: адрес сайта («yandex.ru», «google.com») или обычное
+    /// предложение со знаком препинания ВНУТРИ слова — не только на границе,
+    /// для которой уже есть отдельная обрезка.
+    ///
+    /// Здесь слово режется по символам вне алфавита на сегменты, каждый
+    /// сегмент от двух символов оценивается отдельно тем же `meanLogProb`, и
+    /// результаты усредняются с весом по длине сегмента — иначе короткий
+    /// хвост после точки (например «ru» у «yandex.ru») получил бы тот же вес,
+    /// что и длинная содержательная часть перед ней. Завершающий маркер
+    /// (`terminated`) применяется только к ПОСЛЕДНЕМУ сегменту: только он
+    /// граничит с настоящим концом слова, а не со знаком препинания внутри.
+    ///
+    /// Замер (3938 положительных, 8000 отрицательных, половина отрицательных
+    /// с доменными окончаниями .ru/.com/.org) — см. doc-комментарий
+    /// `DetectorThresholds.calibrated`.
+    ///
+    /// - Returns: `nil`, если НИ ОДИН сегмент не набрал двух символов
+    ///   (например «a.b» — оба куска короче двух букв) — такое слово нечем
+    ///   оценить даже посегментно.
+    public func meanLogProbBySegments(_ word: String, terminated: Bool) -> Double? {
+        let lower = word.lowercased()
+        let segments = lower.split(whereSeparator: { indexOf[$0] == nil })
+        guard !segments.isEmpty else { return nil }
+
+        var weightedTotal = 0.0
+        var totalWeight = 0.0
+        let lastIndex = segments.count - 1
+        for (i, segment) in segments.enumerated() {
+            guard segment.count >= 2 else { continue }
+            let segmentTerminated = terminated && i == lastIndex
+            guard let score = meanLogProb(String(segment), terminated: segmentTerminated) else { continue }
+            let weight = Double(segment.count)
+            weightedTotal += score * weight
+            totalWeight += weight
+        }
+        guard totalWeight > 0 else { return nil }
+        return weightedTotal / totalWeight
+    }
 }

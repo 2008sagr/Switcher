@@ -247,11 +247,26 @@ func testContextDoesNotBreakCommonEnglishWordInRussianText() throws {
 /// Найдено sweep'ом по расширенному списку слов с внутренними
 /// б/ю/ж/э/х/ъ/ё (подробности подбора — в task-6b-report.md,
 /// «Фикс-раунд 1»).
+/// Слово для этого теста подобрано заново после перехода на посегментную
+/// оценку. Раньше здесь стояло «заём» (typed "pf§v"): под старым meanLogProb
+/// currentScore был nil (внутри "ё" вне алфавита), решение шло веткой
+/// absoluteTarget. С посегментной оценкой у "pf§v" сегмент "pf" — уже 2
+/// символа и оценивается, currentScore стал НЕ nil, и слово переехало в
+/// ветку delta (там оно конвертируется уже БЕЗ контекста — сам по себе
+/// признак того, что фикс расширил, а не сузил, детекцию). Год для этого
+/// теста слово нужно другое: такое, где currentScore посегментно
+/// по-прежнему nil (ни один сегмент typed-строки не набирает двух символов).
+///
+/// «тюл» (ткань) ↔ typed "n.k": оба сегмента ("n", "k") длиной 1, currentScore
+/// nil, targetScore ≈ -1.67 — между -1.6 (порог без контекста, keep) и -2.1
+/// (порог с полным русским контекстом, convert). Подобрано перебором по
+/// всем typed-строкам вида «буква,пунктуация,буква» с проверкой этого
+/// диапазона (см. отчёт).
 func testContextAppliesToAbsoluteTargetBranch() throws {
     let models: [Layout: TrigramModel] = [.en: try TrigramModel.bundled(.en),
                                           .ru: try TrigramModel.bundled(.ru)]
     let (_, mapper) = try makeFixture()
-    let typed = try XCTUnwrap(mapper.transpose("заём", from: .ru, to: .en))
+    let typed = try XCTUnwrap(mapper.transpose("тюл", from: .ru, to: .en))
 
     let without = LayoutDetector(models: models, mapper: mapper, validator: nil)
     XCTAssertEqual(without.evaluate(word: typed, currentLayout: .en, trigger: .wordBoundary),
@@ -261,7 +276,7 @@ func testContextAppliesToAbsoluteTargetBranch() throws {
     for _ in 0..<3 { prior.record(.ru) }
     let with = LayoutDetector(models: models, mapper: mapper, validator: nil, prior: prior)
     XCTAssertEqual(with.evaluate(word: typed, currentLayout: .en, trigger: .wordBoundary),
-                   .convert(to: .ru, text: "заём"),
+                   .convert(to: .ru, text: "тюл"),
                    "Русский контекст должен сдвигать и абсолютный порог тоже")
 }
 
@@ -311,6 +326,75 @@ func testUnterminatedPrefixesScoreAsConfidentlyAsWholeWords() throws {
     }
 }
 
+/// Адреса сайтов, набранные не в той раскладке. Раньше слово вообще не
+/// доходило до сравнения раскладок: targetModel.meanLogProb(converted, ...)
+/// возвращал nil на точке ВНУТРИ слова ("yandex.ru", "google.com"), и первый
+/// же guard в evaluate() уводил решение в .keep. Посегментная оценка режет
+/// слово по неалфавитным символам и оценивает куски "yandex"/"ru",
+/// "google"/"com" по отдельности.
+func testConvertsWebsiteAddressesWithInternalPunctuation() throws {
+    let (detector, mapper) = try makeFixture()
+    let cases: [(domain: String, typed: String)] = [
+        ("yandex.ru", "нфтвучюкг"),
+        ("google.com", "пщщпдуюсщь"),
+    ]
+    for (domain, expectedTyped) in cases {
+        let typed = try XCTUnwrap(mapper.transpose(domain, from: .en, to: .ru),
+                                  "\(domain): транспонирование должно работать")
+        XCTAssertEqual(typed, expectedTyped,
+                       "\(domain): ожидали конкретную транспонированную форму из замера")
+        XCTAssertEqual(detector.evaluate(word: typed, currentLayout: .ru, trigger: .wordBoundary),
+                       .convert(to: .en, text: domain),
+                       "\(typed) должно исправляться в «\(domain)»")
+    }
+}
+
+/// Регрессия на переход evaluate() на посегментную оценку: слова с
+/// пунктуацией, набранные ВЕРНО (не в чужой раскладке), по-прежнему нельзя
+/// трогать. "don't" уже не задевает сегментацию — апостроф входит в
+/// английский алфавит модели, — но включён явно, чтобы фиксировать это.
+func testDoesNotTouchCorrectlyTypedWordsWithPunctuationAfterSegmentedScoringFix() throws {
+    let (detector, _) = try makeFixture()
+    XCTAssertEqual(detector.evaluate(word: "hello.", currentLayout: .en, trigger: .wordBoundary),
+                   .keep, "«hello.» — верно набранное английское слово")
+    XCTAssertEqual(detector.evaluate(word: "world,", currentLayout: .en, trigger: .wordBoundary),
+                   .keep, "«world,» — верно набранное английское слово")
+    XCTAssertEqual(detector.evaluate(word: "don't", currentLayout: .en, trigger: .wordBoundary),
+                   .keep, "«don't» — апостроф входит в алфавит, сегментация тут ни при чём")
+    XCTAssertEqual(detector.evaluate(word: "привет.", currentLayout: .ru, trigger: .wordBoundary),
+                   .keep, "«привет.» — верно набранное русское слово")
+}
+
+/// Ветка absoluteTarget не исчезла с переходом на посегментную оценку —
+/// сузилась. Раньше в неё попадало любое слово с внутренней пунктуацией,
+/// раз modели текущего языка целиком было нечем оценивать. Теперь
+/// meanLogProbBySegments оценивает и сегменты ≥2 символов тоже, так что
+/// ветка достижима только когда НИ ОДИН сегмент не набирает двух символов —
+/// например "a.b" (сегменты "a" и "b" по одному символу).
+///
+/// Тест проверяет это на живом мэппере: "a.b", набранное при английской
+/// раскладке, — не настоящее русское слово ни в каком смысле, но
+/// демонстрирует механизм — currentScore (en) не оценивается вообще,
+/// targetScore (ru, транспонированная гиббериш-строка без внутренней
+/// пунктуации) оценивается и оказывается ниже порога, поэтому решение —
+/// .keep, принятое именно веткой absoluteTarget, а не первым guard'ом.
+func testAbsoluteTargetBranchReachableOnlyWhenNoSegmentReachesMinimumLength() throws {
+    let (detector, mapper) = try makeFixture()
+    let en = try TrigramModel.bundled(.en)
+    let ru = try TrigramModel.bundled(.ru)
+
+    XCTAssertNil(en.meanLogProbBySegments("a.b", terminated: true),
+                "currentScore обязан быть nil — иначе решение приняла бы ветка delta, а не absoluteTarget")
+
+    let converted = try XCTUnwrap(mapper.transpose("a.b", from: .en, to: .ru),
+                                  "транспонирование не должно падать на коротких сегментах")
+    XCTAssertNotNil(ru.meanLogProbBySegments(converted, terminated: true),
+                    "targetScore обязан быть НЕ nil — иначе evaluate() вышел бы на самом первом guard'е, а не на absoluteTarget")
+
+    XCTAssertEqual(detector.evaluate(word: "a.b", currentLayout: .en, trigger: .wordBoundary), .keep,
+                   "«a.b» — не русское слово, absoluteTarget должен оставить его как есть")
+}
+
 let layoutDetectorCalibrationTests: [TestCase] = [
     TestCase("testNoFalsePositivesOnCorrectlyTypedWords", testNoFalsePositivesOnCorrectlyTypedWords),
     TestCase("testCatchesWrongLayoutWords", testCatchesWrongLayoutWords),
@@ -321,5 +405,8 @@ let layoutDetectorCalibrationTests: [TestCase] = [
     TestCase("testContextResolvesAmbiguousWord", testContextResolvesAmbiguousWord),
     TestCase("testContextDoesNotBreakCommonEnglishWordInRussianText", testContextDoesNotBreakCommonEnglishWordInRussianText),
     TestCase("testContextAppliesToAbsoluteTargetBranch", testContextAppliesToAbsoluteTargetBranch),
-    TestCase("testUnterminatedPrefixesScoreAsConfidentlyAsWholeWords", testUnterminatedPrefixesScoreAsConfidentlyAsWholeWords)
+    TestCase("testUnterminatedPrefixesScoreAsConfidentlyAsWholeWords", testUnterminatedPrefixesScoreAsConfidentlyAsWholeWords),
+    TestCase("testConvertsWebsiteAddressesWithInternalPunctuation", testConvertsWebsiteAddressesWithInternalPunctuation),
+    TestCase("testDoesNotTouchCorrectlyTypedWordsWithPunctuationAfterSegmentedScoringFix", testDoesNotTouchCorrectlyTypedWordsWithPunctuationAfterSegmentedScoringFix),
+    TestCase("testAbsoluteTargetBranchReachableOnlyWhenNoSegmentReachesMinimumLength", testAbsoluteTargetBranchReachableOnlyWhenNoSegmentReachesMinimumLength)
 ]
