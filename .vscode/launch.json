@@ -1,0 +1,64 @@
+{
+    "configurations": [
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:switcher}",
+            "name": "Debug Switcher",
+            "target": "Switcher",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug Switcher"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:switcher}",
+            "name": "Release Switcher",
+            "target": "Switcher",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release Switcher"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:switcher}",
+            "name": "Debug SwitcherApp",
+            "target": "SwitcherApp",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug SwitcherApp"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:switcher}",
+            "name": "Release SwitcherApp",
+            "target": "SwitcherApp",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release SwitcherApp"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:switcher}",
+            "name": "Debug SwitcherTests",
+            "target": "SwitcherTests",
+            "configuration": "debug",
+            "preLaunchTask": "swift: Build Debug SwitcherTests"
+        },
+        {
+            "type": "swift",
+            "request": "launch",
+            "args": [],
+            "cwd": "${workspaceFolder:switcher}",
+            "name": "Release SwitcherTests",
+            "target": "SwitcherTests",
+            "configuration": "release",
+            "preLaunchTask": "swift: Build Release SwitcherTests"
+        }
+    ]
+}
