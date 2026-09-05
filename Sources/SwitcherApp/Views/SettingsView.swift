@@ -1,5 +1,6 @@
 import SwiftUI
 import UniformTypeIdentifiers
+import SwitcherCore
 
 struct SettingsView: View {
     @EnvironmentObject var appState: AppState
@@ -41,13 +42,8 @@ struct GeneralTab: View {
                 Toggle("Включить Switcher", isOn: $appState.isEnabled)
                 Toggle("Автопереключение при вводе слова", isOn: $appState.autoSwitchEnabled)
                     .help("Автоматически переключает раскладку и заменяет текст после ввода слова не в той раскладке.")
-                Toggle("Конвертировать выделение двойным Shift", isOn: $appState.doubleShiftEnabled)
-                    .help("Выделите текст и дважды нажмите Shift, чтобы конвертировать его между раскладками. Без выделения — отменяет последнюю замену.")
-            }
-
-            Section("Обучение") {
-                Toggle("Учиться на исправлениях", isOn: $appState.learningEnabled)
-                    .help("Отмена двойным Shift → слово добавляется в исключения. Двойной Shift с выделением → каждое конвертированное слово добавляется в правила исправлений.")
+                Toggle("Отмена двойным Shift", isOn: $appState.doubleShiftEnabled)
+                    .help("Дважды нажмите Shift, чтобы отменить последнюю замену: исходное слово восстанавливается, раскладка возвращается.")
             }
 
             Section("Разрешения") {
@@ -84,9 +80,6 @@ struct DetectionTab: View {
     var body: some View {
         Form {
             Section("Распознавание слов") {
-                Toggle("Проверять орфографию", isOn: $appState.spellCheckEnabled)
-                    .help("Использует встроенную проверку орфографии macOS. Если словарь языка недоступен, применяется частотный анализ n-грамм.")
-
                 HStack {
                     Text("Минимальная длина слова")
                     Spacer()
@@ -97,14 +90,10 @@ struct DetectionTab: View {
 
             Section("Как работает отмена") {
                 VStack(alignment: .leading, spacing: 6) {
-                    Label("Дважды нажмите Shift без выделения, чтобы отменить последнюю замену.", systemImage: "arrow.uturn.backward")
+                    Label("Дважды нажмите Shift, чтобы отменить последнюю замену.", systemImage: "arrow.uturn.backward")
                     Label("Исходное слово восстанавливается, раскладка возвращается.", systemImage: "keyboard")
-                    if appState.learningEnabled {
-                        Label("Обучение включено — отменённые слова добавляются в исключения.", systemImage: "brain")
-                            .foregroundColor(.accentColor)
-                        Label("Двойной Shift — конвертированные слова добавляются в правила исправлений.", systemImage: "brain")
-                            .foregroundColor(.accentColor)
-                    }
+                    Label("Отменённые слова никуда не запоминаются — исключения добавляются только вручную, во вкладке «Словарь».", systemImage: "hand.raised")
+                        .foregroundColor(.secondary)
                 }
                 .font(.callout)
             }
@@ -626,9 +615,7 @@ struct AboutTab: View {
 
             VStack(alignment: .leading, spacing: 8) {
                 FeatureRow(icon: "wand.and.sparkles",     text: "Автоматически определяет и исправляет ввод в неверной раскладке")
-                FeatureRow(icon: "shift.fill",             text: "Двойной Shift конвертирует выделенный текст")
-                FeatureRow(icon: "arrow.uturn.backward",  text: "Двойной Shift без выделения отменяет последнюю замену")
-                FeatureRow(icon: "brain",                 text: "Учится на исправлениях, чтобы не повторять ошибки")
+                FeatureRow(icon: "arrow.uturn.backward",  text: "Двойной Shift отменяет последнюю замену")
                 FeatureRow(icon: "text.book.closed",      text: "Редактируемый словарь исключений с импортом/экспортом")
                 FeatureRow(icon: "app.badge.checkmark",   text: "Исключения по приложениям для редакторов и терминалов")
                 FeatureRow(icon: "text.badge.checkmark",  text: "Правила исправления опечаток — напр. чтото → что-то")

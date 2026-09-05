@@ -2,14 +2,18 @@ import Foundation
 
 // MARK: - Last switch info (for undo)
 
-struct LastSwitchInfo {
+public struct LastSwitchInfo {
     let originalWord:  String   // what user actually typed ("ghbdtn")
-    let replacedWith:  String   // what we replaced it with ("привет")
+    public let replacedWith:  String   // what we replaced it with ("привет")
+    /// Физические нажатия исходного слова — нужны, чтобы отмена могла
+    /// переиграть их стратегией .keycodeReplay, а не полагаться на пустой
+    /// массив (см. ревью Task 12, находка 2: пустые strokes на этой
+    /// стратегии удаляют текст и не печатают его обратно).
+    let strokes:       [KeyStroke]
     let fromLanguage:  String   // layout that was active when user typed
     let toLanguage:    String   // layout we switched to
     let timestamp:     Date
     let isCorrection:  Bool     // true = typo correction, false = layout switch
-    let isDoubleShift: Bool     // true = triggered by double-shift on selected text
 
     /// Undo is only available for a short window after the switch.
     var isUndoable: Bool {
@@ -19,9 +23,9 @@ struct LastSwitchInfo {
 
 // MARK: - Correction rule (typo → correct spelling)
 
-struct CorrectionRule: Codable {
-    var from: String   // word as typed (stored lowercased)
-    var to:   String   // corrected replacement
+public struct CorrectionRule: Codable {
+    public var from: String   // word as typed (stored lowercased)
+    public var to:   String   // corrected replacement
 }
 
 // MARK: - Switch dictionary
@@ -29,10 +33,10 @@ struct CorrectionRule: Codable {
 /// Persistent user dictionary for Switcher.
 /// Stores exceptions (words that must never be auto-switched) and correction rules.
 /// Saved as JSON to ~/.switcher/dictionary.json (user home directory, survives app updates).
-struct SwitchDictionary: Codable {
+public struct SwitchDictionary: Codable {
 
     var schemaVersion: Int            = 1
-    var exceptions:    [String]       = []    // sorted, stable JSON diff
+    public var exceptions:    [String]       = []    // sorted, stable JSON diff
     var excludedApps:  [String]       = []    // bundle IDs of apps where auto-switch is disabled
     var corrections:   [CorrectionRule] = []  // typo → correct spelling rules
     var lastModified:  Date           = Date()
@@ -50,7 +54,7 @@ struct SwitchDictionary: Codable {
 
     // MARK: - Persistence
 
-    static var fileURL: URL = {
+    public static var fileURL: URL = {
         let home = FileManager.default.homeDirectoryForCurrentUser
         let dir = home.appendingPathComponent(".switcher", isDirectory: true)
         try? FileManager.default.createDirectory(at: dir,
@@ -157,7 +161,7 @@ struct SwitchDictionary: Codable {
 
     // MARK: - Export
 
-    func exportJSON() -> Data? {
+    public func exportJSON() -> Data? {
         try? Self.encoder.encode(self)
     }
 
@@ -168,11 +172,11 @@ struct SwitchDictionary: Codable {
 
     // MARK: - Import
 
-    static func fromJSON(_ data: Data) throws -> SwitchDictionary {
+    public static func fromJSON(_ data: Data) throws -> SwitchDictionary {
         try decoder.decode(SwitchDictionary.self, from: data)
     }
 
-    static func fromText(_ text: String) -> SwitchDictionary {
+    public static func fromText(_ text: String) -> SwitchDictionary {
         var dict = SwitchDictionary()
         let words = text.components(separatedBy: .newlines)
             .map { $0.trimmingCharacters(in: .whitespaces).lowercased() }

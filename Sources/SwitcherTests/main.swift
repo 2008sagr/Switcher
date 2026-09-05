@@ -1,0 +1,20 @@
+import Foundation
+
+let filter = CommandLine.arguments.dropFirst().first
+
+let suites: [(String, [TestCase])] = [
+    ("KeyboardLayoutTableTests", keyboardLayoutTableTests),
+    ("LayoutMapperTests", layoutMapperTests),
+    ("TrigramModelTests", trigramModelTests),
+    ("LayoutDetectorCalibrationTests", layoutDetectorCalibrationTests),
+    ("LanguagePriorTests", languagePriorTests),
+    ("GuardRulesTests", guardRulesTests),
+    ("KeystrokeBufferTests", keystrokeBufferTests),
+    ("EventTapControllerTests", eventTapControllerTests),
+    ("ClipboardGuardTests", clipboardGuardTests),
+    ("TextInjectorTests", textInjectorTests),
+    ("CurrentLayoutCacheTests", currentLayoutCacheTests),
+    ("SelectionConverterTests", selectionConverterTests),
+]
+
+exit(runSuites(suites, filter: filter))

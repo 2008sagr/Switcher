@@ -1,5 +1,6 @@
 import Cocoa
 import ApplicationServices
+import SwitcherCore
 
 class AppDelegate: NSObject, NSApplicationDelegate {
 
